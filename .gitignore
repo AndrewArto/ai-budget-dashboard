@@ -1,0 +1,6 @@
+.venv/
+*.pdf
+spec.html
+logo.png
+style.css
+to-pdf.mjs

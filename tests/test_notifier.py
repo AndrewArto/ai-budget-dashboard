@@ -1,0 +1,89 @@
+"""Tests for the notifier module."""
+
+from unittest.mock import patch, MagicMock
+
+import notifier
+
+
+class TestCheckAndNotify:
+    def setup_method(self):
+        """Reset alerts before each test."""
+        notifier.reset_alerts()
+
+    @patch("notifier._send_notification")
+    def test_below_threshold_no_alert(self, mock_send):
+        notifier.check_and_notify("Anthropic", "anthropic", 50.0, [80, 95])
+        mock_send.assert_not_called()
+
+    @patch("notifier._send_notification")
+    def test_at_threshold_sends_alert(self, mock_send):
+        notifier.check_and_notify("Anthropic", "anthropic", 80.0, [80, 95])
+        mock_send.assert_called_once()
+        assert "80%" in mock_send.call_args[1]["message"] or "80%" in mock_send.call_args[0][1]
+
+    @patch("notifier._send_notification")
+    def test_above_threshold_sends_alert(self, mock_send):
+        notifier.check_and_notify("OpenAI", "openai", 90.0, [80, 95])
+        mock_send.assert_called_once()
+
+    @patch("notifier._send_notification")
+    def test_duplicate_alert_not_sent(self, mock_send):
+        notifier.check_and_notify("Anthropic", "anthropic", 85.0, [80, 95])
+        assert mock_send.call_count == 1
+
+        # Same threshold, same provider — should NOT send again
+        notifier.check_and_notify("Anthropic", "anthropic", 87.0, [80, 95])
+        assert mock_send.call_count == 1
+
+    @patch("notifier._send_notification")
+    def test_multiple_thresholds(self, mock_send):
+        notifier.check_and_notify("xAI", "xai", 96.0, [80, 95])
+        # Should trigger both 80% and 95% thresholds
+        assert mock_send.call_count == 2
+
+    @patch("notifier._send_notification")
+    def test_different_providers_independent(self, mock_send):
+        notifier.check_and_notify("Anthropic", "anthropic", 85.0, [80, 95])
+        notifier.check_and_notify("OpenAI", "openai", 85.0, [80, 95])
+        assert mock_send.call_count == 2
+
+    @patch("notifier._send_notification")
+    def test_reset_alerts(self, mock_send):
+        notifier.check_and_notify("Anthropic", "anthropic", 85.0, [80, 95])
+        assert mock_send.call_count == 1
+
+        notifier.reset_alerts()
+
+        notifier.check_and_notify("Anthropic", "anthropic", 85.0, [80, 95])
+        assert mock_send.call_count == 2
+
+
+class TestSendNotification:
+    @patch("notifier.subprocess.run")
+    def test_sends_osascript(self, mock_run):
+        notifier._send_notification("Test Title", "Test message")
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert args[0] == "osascript"
+        assert "Test Title" in args[2]
+        assert "Test message" in args[2]
+
+    @patch("notifier.subprocess.run")
+    def test_handles_failure(self, mock_run):
+        mock_run.side_effect = FileNotFoundError("osascript not found")
+        # Should not raise
+        notifier._send_notification("Title", "Message")
+
+
+class TestEscapeApplescript:
+    def test_escapes_quotes(self):
+        result = notifier._escape_applescript('He said "hello"')
+        assert result == 'He said \\"hello\\"'
+
+    def test_escapes_backslash(self):
+        result = notifier._escape_applescript("path\\to\\file")
+        assert result == "path\\\\to\\\\file"
+
+    def test_plain_string(self):
+        result = notifier._escape_applescript("simple text")
+        assert result == "simple text"
