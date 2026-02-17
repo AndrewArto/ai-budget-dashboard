@@ -53,25 +53,33 @@ class XAIProvider(BaseProvider):
             if team_id and mgmt_key:
                 try:
                     result = self._call_billing_api(team_id, mgmt_key)
-                    if result is not None:
-                        return UsageData(
-                            provider_id=self.provider_id,
-                            provider_name=self.provider_name,
-                            current_spend=result["spend"],
-                            monthly_budget=budget,
-                            tokens_in=result["tokens_in"],
-                            tokens_out=result["tokens_out"],
-                        )
+                    return UsageData(
+                        provider_id=self.provider_id,
+                        provider_name=self.provider_name,
+                        current_spend=result["spend"],
+                        monthly_budget=budget,
+                        tokens_in=result["tokens_in"],
+                        tokens_out=result["tokens_out"],
+                    )
                 except Exception as e:
                     billing_error = e
                     logger.warning(
                         "xAI Management API failed, falling back to local tracking: %s", e
                     )
+            else:
+                # Key exists but no team_id configured — can't use billing API
+                billing_error = "no team_id configured, using local tracking"
+                logger.info("xAI: %s", billing_error)
 
         # Fall back to local tracker — let errors propagate
         if self._tracker is not None:
             tracked = self._tracker.get_monthly_usage("xai")
-            error_msg = f"Billing API failed: {billing_error}" if billing_error else None
+            if isinstance(billing_error, Exception):
+                error_msg = f"Billing API failed: {billing_error}"
+            elif isinstance(billing_error, str):
+                error_msg = billing_error
+            else:
+                error_msg = None
             return UsageData(
                 provider_id=self.provider_id,
                 provider_name=self.provider_name,
@@ -83,7 +91,7 @@ class XAIProvider(BaseProvider):
             )
 
         # No tracker and billing failed — raise so caller preserves last-known-good
-        if billing_error:
+        if isinstance(billing_error, Exception):
             raise billing_error
 
         if not api_key:
@@ -120,16 +128,15 @@ class XAIProvider(BaseProvider):
 
         return "", ""
 
-    def _call_billing_api(self, team_id: str, mgmt_key: str) -> dict | None:
+    def _call_billing_api(self, team_id: str, mgmt_key: str) -> dict:
         """Call the xAI Management API for billing data.
 
         Tries the invoice preview endpoint for current month spend.
 
-        Returns dict with spend/tokens_in/tokens_out, or None if the
-        response cannot be parsed.
+        Returns dict with spend/tokens_in/tokens_out.
 
-        Raises on HTTP/network errors so the caller can preserve
-        last-known-good data.
+        Raises on HTTP/network errors or unparseable responses so the
+        caller can fall back to local tracking or preserve last-known-good.
         """
         headers = {
             "Authorization": f"Bearer {mgmt_key}",
@@ -142,16 +149,19 @@ class XAIProvider(BaseProvider):
         data = resp.json()
 
         if not isinstance(data, dict):
-            logger.warning("xAI billing API returned non-dict response: %s", type(data).__name__)
-            return None
+            raise ValueError(
+                f"xAI billing API returned non-dict response: {type(data).__name__}"
+            )
 
         # Extract spend — handle total, amount, total_amount, subtotal
         total_spend = 0.0
-        for field in ("total", "amount", "total_amount", "subtotal"):
-            val = data.get(field)
+        spend_found = False
+        for spend_field in ("total", "amount", "total_amount", "subtotal"):
+            val = data.get(spend_field)
             if val is not None:
                 try:
                     total_spend = float(val)
+                    spend_found = True
                 except (TypeError, ValueError):
                     continue
                 break
@@ -176,8 +186,14 @@ class XAIProvider(BaseProvider):
                     item_amount = item.get("amount", item.get("total", 0))
                     try:
                         total_spend += float(item_amount)
+                        spend_found = True
                     except (TypeError, ValueError):
                         continue
+
+        if not spend_found:
+            raise ValueError(
+                f"xAI billing API response has no parseable spend fields: {list(data.keys())}"
+            )
 
         return {
             "spend": round(total_spend, 4),

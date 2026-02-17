@@ -69,6 +69,18 @@ fake_rumps.quit_application = MagicMock()
 # Patch rumps before importing main
 sys.modules["rumps"] = fake_rumps
 
+# Mock PyObjCTools.AppHelper (hard dependency — macOS-only app)
+import types
+
+fake_apphelper = types.ModuleType("PyObjCTools.AppHelper")
+fake_apphelper.callAfter = MagicMock()
+
+fake_pyobjctools = types.ModuleType("PyObjCTools")
+fake_pyobjctools.AppHelper = fake_apphelper
+
+sys.modules["PyObjCTools"] = fake_pyobjctools
+sys.modules["PyObjCTools.AppHelper"] = fake_apphelper
+
 from providers.base import UsageData
 
 
@@ -184,8 +196,8 @@ class TestBudgetDashboardApp:
 
     @patch("keychain.get_api_key", return_value=None)
     @patch("config.load_config")
-    def test_schedule_ui_update_uses_timer_fallback(self, mock_config, mock_keychain):
-        """Without PyObjC, _schedule_ui_update should use rumps.Timer fallback."""
+    def test_schedule_ui_update_always_uses_apphelper(self, mock_config, mock_keychain):
+        """PyObjC is a hard dependency — _schedule_ui_update always uses AppHelper.callAfter."""
         mock_config.return_value = {
             "providers": {
                 "anthropic": {"budget": 80.0, "enabled": True},
@@ -202,38 +214,6 @@ class TestBudgetDashboardApp:
 
         import main as app_main
 
-        # Force fallback path (no AppHelper)
-        original = app_main._has_apphelper
-        app_main._has_apphelper = False
-        try:
-            app = app_main.BudgetDashboardApp()
-            app._schedule_ui_update()
-            # Should create a FakeTimer (from our mocked rumps)
-        finally:
-            app_main._has_apphelper = original
-
-    @patch("keychain.get_api_key", return_value=None)
-    @patch("config.load_config")
-    def test_schedule_ui_update_uses_apphelper(self, mock_config, mock_keychain):
-        """With PyObjC, _schedule_ui_update should use AppHelper.callAfter."""
-        mock_config.return_value = {
-            "providers": {
-                "anthropic": {"budget": 80.0, "enabled": True},
-                "openai": {"budget": 60.0, "enabled": True},
-                "google": {"budget": 30.0, "enabled": True},
-                "xai": {"budget": 30.0, "enabled": True},
-            },
-            "refreshIntervalMinutes": 15,
-            "alertThresholds": [80, 95],
-            "displayMode": "compact",
-            "localTrackingLogPath": "/tmp/test-logs/",
-            "xaiTeamId": "",
-        }
-
-        import main as app_main
-
-        original = app_main._has_apphelper
-        app_main._has_apphelper = True
         mock_callafter = MagicMock()
 
         # Temporarily inject mock AppHelper
@@ -241,18 +221,45 @@ class TestBudgetDashboardApp:
         fake_helper = types.ModuleType("PyObjCTools.AppHelper")
         fake_helper.callAfter = mock_callafter
 
-        with patch.dict(sys.modules, {"PyObjCTools.AppHelper": fake_helper}):
-            with patch.object(app_main, "AppHelper", fake_helper, create=True):
-                app = app_main.BudgetDashboardApp()
-                # Init triggers background refresh which also calls _schedule_ui_update
-                import time
-                time.sleep(0.1)
-                mock_callafter.reset_mock()
+        with patch.object(app_main, "AppHelper", fake_helper):
+            app = app_main.BudgetDashboardApp()
+            # Init triggers background refresh which also calls _schedule_ui_update
+            import time
+            time.sleep(0.1)
+            mock_callafter.reset_mock()
 
-                app._schedule_ui_update()
-                mock_callafter.assert_called_once_with(app._do_ui_update)
+            app._schedule_ui_update()
+            mock_callafter.assert_called_once_with(app._do_ui_update)
 
-        app_main._has_apphelper = original
+    @patch("keychain.get_api_key", return_value=None)
+    @patch("config.load_config")
+    def test_pyobjc_is_hard_dependency(self, mock_config, mock_keychain):
+        """PyObjC AppHelper is imported unconditionally — no try/except fallback."""
+        mock_config.return_value = {
+            "providers": {
+                "anthropic": {"budget": 80.0, "enabled": True},
+                "openai": {"budget": 60.0, "enabled": True},
+                "google": {"budget": 30.0, "enabled": True},
+                "xai": {"budget": 30.0, "enabled": True},
+            },
+            "refreshIntervalMinutes": 15,
+            "alertThresholds": [80, 95],
+            "displayMode": "compact",
+            "localTrackingLogPath": "/tmp/test-logs/",
+            "xaiTeamId": "",
+        }
+
+        import main as app_main
+
+        # Verify there is no _has_apphelper flag (removed — PyObjC is always required)
+        assert not hasattr(app_main, "_has_apphelper")
+
+        # Verify AppHelper is imported at module level
+        assert hasattr(app_main, "AppHelper")
+
+        # Verify no timer fallback method exists
+        app = app_main.BudgetDashboardApp()
+        assert not hasattr(app, "_do_ui_update_timer")
 
     @patch("keychain.get_api_key", return_value=None)
     @patch("config.load_config")

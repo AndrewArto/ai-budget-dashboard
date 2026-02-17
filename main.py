@@ -12,12 +12,7 @@ from datetime import datetime, timezone
 
 import rumps
 
-try:
-    from PyObjCTools import AppHelper
-
-    _has_apphelper = True
-except ImportError:  # pragma: no cover
-    _has_apphelper = False
+from PyObjCTools import AppHelper
 
 import config as app_config
 import keychain
@@ -296,22 +291,13 @@ class BudgetDashboardApp(rumps.App):
         """Dispatch UI update to the main thread.
 
         Uses PyObjC AppHelper.callAfter to safely mutate rumps UI elements
-        from a background thread. Falls back to rumps.Timer if PyObjC is
-        unavailable (e.g., in tests).
+        from a background thread. This is a macOS-only app, so PyObjC is
+        always available as a hard dependency.
         """
-        if _has_apphelper:
-            AppHelper.callAfter(self._do_ui_update)
-        else:
-            rumps.Timer(self._do_ui_update_timer, 0.0).start()
+        AppHelper.callAfter(self._do_ui_update)
 
     def _do_ui_update(self) -> None:
         """Update UI elements — must be called on the main thread."""
-        self._update_title()
-        self._build_menu()
-
-    def _do_ui_update_timer(self, timer) -> None:
-        """Timer-based UI update fallback (for environments without PyObjC)."""
-        timer.stop()
         self._update_title()
         self._build_menu()
 

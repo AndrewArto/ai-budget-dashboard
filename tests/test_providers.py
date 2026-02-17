@@ -511,3 +511,69 @@ class TestXAIProvider:
         usage = provider.fetch_usage("team1:key1", 30.0)
 
         assert usage.current_spend == pytest.approx(8.50)
+
+    def test_no_team_id_sets_error_on_fallback(self):
+        """Key without team_id should set error field when falling back to tracker."""
+        mock_tracker = MagicMock()
+        mock_tracker.get_monthly_usage.return_value = {
+            "spend": 1.0,
+            "tokens_in": 100,
+            "tokens_out": 50,
+        }
+
+        provider = XAIProvider(tracker=mock_tracker)
+        usage = provider.fetch_usage("just-a-key-no-colon", 30.0)
+
+        assert usage.current_spend == 1.0
+        assert usage.error is not None
+        assert "no team_id configured" in usage.error
+
+    @patch("providers.xai_api.requests.get")
+    def test_billing_api_non_dict_raises(self, mock_get):
+        """Billing API returning non-dict should raise, not silently return zero."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = ["not", "a", "dict"]
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        provider = XAIProvider(tracker=None)
+        with pytest.raises(ValueError, match="non-dict"):
+            provider.fetch_usage("team1:key1", 30.0)
+
+    @patch("providers.xai_api.requests.get")
+    def test_billing_api_no_spend_fields_raises(self, mock_get):
+        """Billing API with no parseable spend fields should raise."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "some_other_field": "value",
+            "metadata": {"info": "data"},
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        provider = XAIProvider(tracker=None)
+        with pytest.raises(ValueError, match="no parseable spend"):
+            provider.fetch_usage("team1:key1", 30.0)
+
+    @patch("providers.xai_api.requests.get")
+    def test_billing_api_unparseable_falls_back_to_tracker(self, mock_get):
+        """When billing API returns unparseable data, should fall back to tracker with error."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"unknown_field": "garbage"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        mock_tracker = MagicMock()
+        mock_tracker.get_monthly_usage.return_value = {
+            "spend": 2.50,
+            "tokens_in": 300_000,
+            "tokens_out": 75_000,
+        }
+
+        provider = XAIProvider(tracker=mock_tracker)
+        usage = provider.fetch_usage("team1:key1", 30.0)
+
+        assert usage.current_spend == 2.50
+        assert usage.error is not None
+        assert "Billing API failed" in usage.error
+        mock_tracker.get_monthly_usage.assert_called_once_with("xai")
