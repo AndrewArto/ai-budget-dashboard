@@ -66,6 +66,36 @@ class TestLoadConfig:
         assert config["providers"]["openai"]["budget"] == 60.0
         assert config["refreshIntervalMinutes"] == 15
 
+    def test_bad_json_returns_defaults(self, tmp_config_dir):
+        """Invalid JSON should not crash; returns defaults."""
+        with open(tmp_config_dir, "w") as f:
+            f.write("{invalid json content!!!")
+
+        config = app_config.load_config(tmp_config_dir)
+        assert config["providers"]["anthropic"]["budget"] == 80.0
+        assert config["refreshIntervalMinutes"] == 15
+
+    def test_non_dict_json_returns_defaults(self, tmp_config_dir):
+        """JSON array instead of object should use defaults."""
+        with open(tmp_config_dir, "w") as f:
+            json.dump([1, 2, 3], f)
+
+        config = app_config.load_config(tmp_config_dir)
+        assert config["providers"]["anthropic"]["budget"] == 80.0
+
+    def test_auto_create_config_on_first_run(self):
+        """Config should be auto-created when file doesn't exist."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "subdir", "config.json")
+            config = app_config.load_config(path)
+            assert config["providers"]["anthropic"]["budget"] == 80.0
+            # File should have been created
+            assert os.path.exists(path)
+            # File should contain valid JSON with defaults
+            with open(path, "r") as f:
+                saved = json.load(f)
+            assert saved["refreshIntervalMinutes"] == 15
+
 
 class TestSaveConfig:
     def test_save_and_reload(self, tmp_config_dir):
@@ -75,6 +105,57 @@ class TestSaveConfig:
 
         loaded = app_config.load_config(tmp_config_dir)
         assert loaded["refreshIntervalMinutes"] == 5
+
+
+class TestValidateConfig:
+    def test_refresh_interval_clamped_low(self):
+        config = app_config._validate_config({"refreshIntervalMinutes": 0, "providers": {}})
+        assert config["refreshIntervalMinutes"] == 1
+
+    def test_refresh_interval_clamped_high(self):
+        config = app_config._validate_config({"refreshIntervalMinutes": 9999, "providers": {}})
+        assert config["refreshIntervalMinutes"] == 1440
+
+    def test_refresh_interval_non_numeric(self):
+        config = app_config._validate_config({"refreshIntervalMinutes": "abc", "providers": {}})
+        assert config["refreshIntervalMinutes"] == 15
+
+    def test_alert_thresholds_invalid_values(self):
+        config = app_config._validate_config({"alertThresholds": [0, 101, "bad", 50], "providers": {}})
+        assert 50 in config["alertThresholds"]
+        assert 0 not in config["alertThresholds"]
+        assert 101 not in config["alertThresholds"]
+
+    def test_alert_thresholds_not_a_list(self):
+        config = app_config._validate_config({"alertThresholds": "not_a_list", "providers": {}})
+        assert config["alertThresholds"] == [80, 95]
+
+    def test_display_mode_invalid(self):
+        config = app_config._validate_config({"displayMode": "invalid", "providers": {}})
+        assert config["displayMode"] == "compact"
+
+    def test_negative_budget_clamped(self):
+        config = app_config._validate_config({
+            "providers": {"anthropic": {"budget": -50, "enabled": True}},
+        })
+        assert config["providers"]["anthropic"]["budget"] == 0.0
+
+    def test_non_numeric_budget(self):
+        config = app_config._validate_config({
+            "providers": {"anthropic": {"budget": "not_a_number", "enabled": True}},
+        })
+        assert config["providers"]["anthropic"]["budget"] == 0.0
+
+    def test_provider_config_not_dict(self):
+        config = app_config._validate_config({
+            "providers": {"anthropic": "invalid"},
+        })
+        assert config["providers"]["anthropic"]["budget"] == 0.0
+        assert config["providers"]["anthropic"]["enabled"] is False
+
+    def test_empty_log_path(self):
+        config = app_config._validate_config({"localTrackingLogPath": "", "providers": {}})
+        assert config["localTrackingLogPath"] == "~/.openclaw/logs/"
 
 
 class TestHelpers:

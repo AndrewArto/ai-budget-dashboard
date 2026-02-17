@@ -61,18 +61,35 @@ class TestCheckAndNotify:
 class TestSendNotification:
     @patch("notifier.subprocess.run")
     def test_sends_osascript(self, mock_run):
-        notifier._send_notification("Test Title", "Test message")
+        mock_run.return_value = MagicMock(returncode=0)
+        result = notifier._send_notification("Test Title", "Test message")
         mock_run.assert_called_once()
         args = mock_run.call_args[0][0]
         assert args[0] == "osascript"
         assert "Test Title" in args[2]
         assert "Test message" in args[2]
+        assert result is True
+
+    @patch("notifier.subprocess.run")
+    def test_returns_false_on_nonzero_exit(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr=b"some error"
+        )
+        result = notifier._send_notification("Title", "Message")
+        assert result is False
 
     @patch("notifier.subprocess.run")
     def test_handles_failure(self, mock_run):
         mock_run.side_effect = FileNotFoundError("osascript not found")
-        # Should not raise
-        notifier._send_notification("Title", "Message")
+        result = notifier._send_notification("Title", "Message")
+        assert result is False
+
+    @patch("notifier.subprocess.run")
+    def test_handles_timeout(self, mock_run):
+        import subprocess
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="osascript", timeout=5)
+        result = notifier._send_notification("Title", "Message")
+        assert result is False
 
 
 class TestEscapeApplescript:

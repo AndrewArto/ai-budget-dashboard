@@ -67,6 +67,26 @@ def _get_pricing(model: str) -> dict | None:
     return None
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """Safely coerce a value to int."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    """Safely coerce a value to float."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _calculate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
     """Calculate cost in USD for a single request."""
     pricing = _get_pricing(model)
@@ -98,6 +118,9 @@ class LocalTracker:
         total_tokens_out = 0
 
         for entry in self._read_log_entries():
+            if not isinstance(entry, dict):
+                continue
+
             # Filter by month
             entry_time = entry.get("timestamp")
             if entry_time is None:
@@ -110,21 +133,26 @@ class LocalTracker:
                     dt = datetime.fromtimestamp(entry_time, tz=timezone.utc)
                 else:
                     continue
-            except (ValueError, OSError):
+            except (ValueError, OSError, OverflowError):
                 continue
 
             if dt.month != current_month or dt.year != current_year:
                 continue
 
             # Filter by provider
-            model = entry.get("model", "")
+            model = str(entry.get("model", ""))
             entry_provider = entry.get("provider", _get_provider_for_model(model))
             if entry_provider != provider_id:
                 continue
 
-            tokens_in = entry.get("input_tokens", entry.get("tokens_in", 0))
-            tokens_out = entry.get("output_tokens", entry.get("tokens_out", 0))
-            cost = entry.get("cost", _calculate_cost(model, tokens_in, tokens_out))
+            tokens_in = _safe_int(entry.get("input_tokens", entry.get("tokens_in", 0)))
+            tokens_out = _safe_int(entry.get("output_tokens", entry.get("tokens_out", 0)))
+
+            raw_cost = entry.get("cost")
+            if raw_cost is not None:
+                cost = _safe_float(raw_cost)
+            else:
+                cost = _calculate_cost(model, tokens_in, tokens_out)
 
             total_spend += cost
             total_tokens_in += tokens_in

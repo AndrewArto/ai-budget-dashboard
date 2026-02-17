@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 
@@ -70,39 +70,98 @@ class TestAnthropicProvider:
         assert usage.monthly_budget == 80.0
 
     @patch("providers.anthropic_api.requests.get")
-    def test_successful_fetch_list_format(self, mock_get):
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = [
-            {"spend": 10.5, "input_tokens": 500_000, "output_tokens": 100_000},
-            {"spend": 15.2, "input_tokens": 700_000, "output_tokens": 200_000},
-        ]
-        mock_resp.raise_for_status = MagicMock()
-        mock_get.return_value = mock_resp
+    def test_successful_fetch_cost_report(self, mock_get):
+        """Test with correct cost_report schema: amount in cents."""
+        # First call = cost_report, second call = usage_report
+        cost_resp = MagicMock()
+        cost_resp.json.return_value = {
+            "data": [
+                {
+                    "starting_at": "2026-02-01T00:00:00Z",
+                    "ending_at": "2026-02-02T00:00:00Z",
+                    "results": [
+                        {"amount": "1050", "currency": "USD", "token_type": "uncached_input_tokens"},
+                        {"amount": "1520", "currency": "USD", "token_type": "output_tokens"},
+                    ],
+                }
+            ],
+            "has_more": False,
+            "next_page": None,
+        }
+        cost_resp.raise_for_status = MagicMock()
+
+        usage_resp = MagicMock()
+        usage_resp.json.return_value = {
+            "data": [
+                {
+                    "results": [
+                        {
+                            "uncached_input_tokens": 500_000,
+                            "cache_read_input_tokens": 100_000,
+                            "output_tokens": 200_000,
+                            "cache_creation": {},
+                        }
+                    ]
+                }
+            ],
+            "has_more": False,
+            "next_page": None,
+        }
+        usage_resp.raise_for_status = MagicMock()
+
+        mock_get.side_effect = [cost_resp, usage_resp]
 
         provider = AnthropicProvider()
         usage = provider.fetch_usage("test-key", 80.0)
 
-        assert usage.current_spend == pytest.approx(25.7)
-        assert usage.tokens_in == 1_200_000
-        assert usage.tokens_out == 300_000
+        # 1050 cents + 1520 cents = 2570 cents = $25.70
+        assert usage.current_spend == pytest.approx(25.70)
+        assert usage.tokens_in == 600_000  # 500K + 100K
+        assert usage.tokens_out == 200_000
         assert usage.monthly_budget == 80.0
 
     @patch("providers.anthropic_api.requests.get")
-    def test_successful_fetch_dict_format(self, mock_get):
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
+    def test_pagination_cost_report(self, mock_get):
+        """Test pagination with has_more / next_page."""
+        page1_resp = MagicMock()
+        page1_resp.json.return_value = {
             "data": [
-                {"spend": 5.0, "input_tokens": 200_000, "output_tokens": 50_000},
-            ]
+                {
+                    "results": [{"amount": "500", "currency": "USD"}]
+                }
+            ],
+            "has_more": True,
+            "next_page": "page2_token",
         }
-        mock_resp.raise_for_status = MagicMock()
-        mock_get.return_value = mock_resp
+        page1_resp.raise_for_status = MagicMock()
+
+        page2_resp = MagicMock()
+        page2_resp.json.return_value = {
+            "data": [
+                {
+                    "results": [{"amount": "300", "currency": "USD"}]
+                }
+            ],
+            "has_more": False,
+            "next_page": None,
+        }
+        page2_resp.raise_for_status = MagicMock()
+
+        usage_resp = MagicMock()
+        usage_resp.json.return_value = {
+            "data": [],
+            "has_more": False,
+            "next_page": None,
+        }
+        usage_resp.raise_for_status = MagicMock()
+
+        mock_get.side_effect = [page1_resp, page2_resp, usage_resp]
 
         provider = AnthropicProvider()
         usage = provider.fetch_usage("test-key", 80.0)
 
-        assert usage.current_spend == 5.0
-        assert usage.tokens_in == 200_000
+        # 500 + 300 cents = 800 cents = $8.00
+        assert usage.current_spend == pytest.approx(8.0)
 
     @patch("providers.anthropic_api.requests.get")
     def test_api_error(self, mock_get):
@@ -114,6 +173,26 @@ class TestAnthropicProvider:
         assert usage.current_spend == 0.0
         assert usage.monthly_budget == 80.0
 
+    @patch("providers.anthropic_api.requests.get")
+    def test_usage_api_failure_still_returns_cost(self, mock_get):
+        """If usage_report fails, cost data should still be returned."""
+        cost_resp = MagicMock()
+        cost_resp.json.return_value = {
+            "data": [{"results": [{"amount": "1000"}]}],
+            "has_more": False,
+        }
+        cost_resp.raise_for_status = MagicMock()
+
+        # Usage API raises
+        mock_get.side_effect = [cost_resp, Exception("usage API down")]
+
+        provider = AnthropicProvider()
+        usage = provider.fetch_usage("test-key", 80.0)
+
+        assert usage.current_spend == pytest.approx(10.0)
+        assert usage.tokens_in == 0  # No token data available
+        assert usage.tokens_out == 0
+
 
 class TestOpenAIProvider:
     def test_no_api_key(self):
@@ -124,25 +203,28 @@ class TestOpenAIProvider:
         assert usage.monthly_budget == 60.0
 
     @patch("providers.openai_api.requests.get")
-    def test_successful_fetch(self, mock_get):
+    def test_successful_fetch_nested_amount(self, mock_get):
+        """Test with correct schema: amount is nested object."""
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
+            "object": "page",
             "data": [
                 {
+                    "object": "bucket",
                     "results": [
                         {
-                            "amount": {"value": 8.50},
-                            "input_tokens": 400_000,
-                            "output_tokens": 100_000,
+                            "object": "organization.costs.result",
+                            "amount": {"value": 8.50, "currency": "usd"},
                         },
                         {
-                            "amount": {"value": 3.80},
-                            "input_tokens": 200_000,
-                            "output_tokens": 50_000,
+                            "object": "organization.costs.result",
+                            "amount": {"value": 3.80, "currency": "usd"},
                         },
                     ]
                 }
-            ]
+            ],
+            "has_more": False,
+            "next_page": None,
         }
         mock_resp.raise_for_status = MagicMock()
         mock_get.return_value = mock_resp
@@ -151,8 +233,57 @@ class TestOpenAIProvider:
         usage = provider.fetch_usage("test-key", 60.0)
 
         assert usage.current_spend == pytest.approx(12.30)
-        assert usage.tokens_in == 600_000
-        assert usage.tokens_out == 150_000
+        # Costs API doesn't return tokens
+        assert usage.tokens_in == 0
+        assert usage.tokens_out == 0
+
+    @patch("providers.openai_api.requests.get")
+    def test_pagination(self, mock_get):
+        """Test pagination across multiple pages."""
+        page1_resp = MagicMock()
+        page1_resp.json.return_value = {
+            "data": [
+                {"results": [{"amount": {"value": 5.0, "currency": "usd"}}]}
+            ],
+            "has_more": True,
+            "next_page": "cursor_abc",
+        }
+        page1_resp.raise_for_status = MagicMock()
+
+        page2_resp = MagicMock()
+        page2_resp.json.return_value = {
+            "data": [
+                {"results": [{"amount": {"value": 3.0, "currency": "usd"}}]}
+            ],
+            "has_more": False,
+            "next_page": None,
+        }
+        page2_resp.raise_for_status = MagicMock()
+
+        mock_get.side_effect = [page1_resp, page2_resp]
+
+        provider = OpenAIProvider()
+        usage = provider.fetch_usage("test-key", 60.0)
+
+        assert usage.current_spend == pytest.approx(8.0)
+
+    @patch("providers.openai_api.requests.get")
+    def test_amount_as_flat_number(self, mock_get):
+        """Test graceful handling when amount is a flat number (not dict)."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [
+                {"results": [{"amount": 5.25}]}
+            ],
+            "has_more": False,
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        provider = OpenAIProvider()
+        usage = provider.fetch_usage("test-key", 60.0)
+
+        assert usage.current_spend == pytest.approx(5.25)
 
     @patch("providers.openai_api.requests.get")
     def test_api_error(self, mock_get):
@@ -198,13 +329,13 @@ class TestGoogleProvider:
 
 
 class TestXAIProvider:
-    def test_no_tracker(self):
+    def test_no_tracker_no_key(self):
         provider = XAIProvider(tracker=None)
         usage = provider.fetch_usage(None, 30.0)
         assert usage.provider_id == "xai"
         assert usage.current_spend == 0.0
 
-    def test_with_tracker(self):
+    def test_with_tracker_no_key(self):
         mock_tracker = MagicMock()
         mock_tracker.get_monthly_usage.return_value = {
             "spend": 2.43,
@@ -217,4 +348,57 @@ class TestXAIProvider:
 
         assert usage.current_spend == 2.43
         assert usage.tokens_in == 500_000
+        mock_tracker.get_monthly_usage.assert_called_once_with("xai")
+
+    @patch("providers.xai_api.requests.get")
+    def test_billing_api_with_team_id(self, mock_get):
+        """Test Management API billing with team_id:key format."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "total": 15.50,
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        provider = XAIProvider(tracker=None)
+        usage = provider.fetch_usage("team123:mgmt-key-abc", 30.0)
+
+        assert usage.current_spend == pytest.approx(15.50)
+        mock_get.assert_called_once()
+        # Verify correct URL with team_id
+        call_args = mock_get.call_args
+        assert "team123" in call_args[1].get("url", call_args[0][0] if call_args[0] else "")
+
+    def test_key_without_team_id_falls_back_to_tracker(self):
+        """Key without team_id:key format should fall back to local tracker."""
+        mock_tracker = MagicMock()
+        mock_tracker.get_monthly_usage.return_value = {
+            "spend": 1.0,
+            "tokens_in": 100,
+            "tokens_out": 50,
+        }
+
+        provider = XAIProvider(tracker=mock_tracker)
+        usage = provider.fetch_usage("just-a-key-no-colon", 30.0)
+
+        # Should fall back to local tracker since no team_id:key format
+        assert usage.current_spend == 1.0
+        mock_tracker.get_monthly_usage.assert_called_once_with("xai")
+
+    @patch("providers.xai_api.requests.get")
+    def test_billing_api_failure_falls_back_to_tracker(self, mock_get):
+        """When Management API fails, should fall back to local tracker."""
+        mock_get.side_effect = Exception("API error")
+
+        mock_tracker = MagicMock()
+        mock_tracker.get_monthly_usage.return_value = {
+            "spend": 3.00,
+            "tokens_in": 200_000,
+            "tokens_out": 50_000,
+        }
+
+        provider = XAIProvider(tracker=mock_tracker)
+        usage = provider.fetch_usage("team1:key1", 30.0)
+
+        assert usage.current_spend == 3.00
         mock_tracker.get_monthly_usage.assert_called_once_with("xai")

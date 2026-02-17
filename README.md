@@ -9,7 +9,8 @@ Displays real-time usage for the current calendar month with per-provider breakd
 - **Menu bar display** — total spend/budget at a glance (`$47.23/$200`)
 - **Per-provider breakdown** — click to see spend, budget, progress bar, and token counts
 - **Provider API integrations** — Anthropic Admin API, OpenAI Costs API
-- **Local tracking fallback** — for Google and xAI via OpenClaw log parsing
+- **Local tracking fallback** — for Google via OpenClaw log parsing
+- **xAI Management API** — billing data from xAI Management API with local tracking fallback
 - **Budget alerts** — macOS notifications at 80% and 95% thresholds
 - **Auto-refresh** — configurable interval (default 15 min)
 - **Manual refresh** — click to update immediately
@@ -27,11 +28,11 @@ Displays real-time usage for the current calendar month with per-provider breakd
 # Install dependencies
 pip install -r requirements.txt
 
-# Store API keys in macOS Keychain
+# Store API keys in macOS Keychain (interactive — keys are not saved in shell history)
 python3 -c "
-import keychain
-keychain.set_api_key('anthropic', 'your-anthropic-admin-api-key')
-keychain.set_api_key('openai', 'your-openai-admin-api-key')
+import keychain, getpass
+keychain.set_api_key('anthropic', getpass.getpass('Anthropic Admin API key: '))
+keychain.set_api_key('openai', getpass.getpass('OpenAI Admin API key: '))
 "
 
 # Run the app
@@ -123,7 +124,7 @@ ai-budget-dashboard/
 │   ├── anthropic_api.py # Anthropic Admin API
 │   ├── openai_api.py    # OpenAI Costs API
 │   ├── google_api.py    # Google — local tracking fallback
-│   └── xai_api.py       # xAI — local tracking fallback
+│   └── xai_api.py       # xAI — Management API + local fallback
 ├── tests/               # Test suite (76 tests)
 ├── requirements.txt
 ├── setup.py             # py2app bundling
