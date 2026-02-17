@@ -54,7 +54,8 @@ Settings are stored in `~/.config/ai-budget/config.json`. The file is auto-creat
   "refreshIntervalMinutes": 15,
   "alertThresholds": [80, 95],
   "displayMode": "compact",
-  "localTrackingLogPath": "~/.openclaw/logs/"
+  "localTrackingLogPath": "~/.openclaw/logs/",
+  "xaiTeamId": ""
 }
 ```
 
@@ -68,6 +69,7 @@ Settings are stored in `~/.config/ai-budget/config.json`. The file is auto-creat
 | `alertThresholds` | Budget % thresholds for notifications | [80, 95] |
 | `displayMode` | Menu bar display: `compact` or `icon` | `compact` |
 | `localTrackingLogPath` | Path to OpenClaw logs for fallback tracking | `~/.openclaw/logs/` |
+| `xaiTeamId` | xAI team ID for Management API billing | `""` |
 
 ## API Key Setup
 
@@ -84,9 +86,28 @@ keychain.set_api_key("openai", "sk-admin-...")
 print(keychain.get_api_key("anthropic"))
 ```
 
-## Local Tracking (Google & xAI)
+## xAI Management API
 
-For providers without billing APIs, the app parses OpenClaw request logs from `~/.openclaw/logs/`. Log files should be JSONL format:
+xAI billing data is fetched from the [xAI Management API](https://management-api.x.ai). Configure your team ID in `config.json`:
+
+```json
+{
+  "xaiTeamId": "your-team-id"
+}
+```
+
+Then store your xAI management key in the Keychain:
+
+```python
+import keychain
+keychain.set_api_key("xai", "mgmt_your_key_here")
+```
+
+Alternatively, you can use the legacy `team_id:key` format in the Keychain (e.g., `team123:mgmt_xxx`). If the Management API is unavailable, the app falls back to local log tracking.
+
+## Local Tracking (Google)
+
+For Google (which doesn't provide a billing API for API-key users), the app parses OpenClaw request logs from `~/.openclaw/logs/`. xAI also falls back to local tracking when the Management API is not configured. Log files should be JSONL format:
 
 ```json
 {"timestamp": "2026-02-16T10:30:00Z", "model": "gemini-2.5-pro", "input_tokens": 1000000, "output_tokens": 200000}
@@ -125,7 +146,7 @@ ai-budget-dashboard/
 │   ├── openai_api.py    # OpenAI Costs API
 │   ├── google_api.py    # Google — local tracking fallback
 │   └── xai_api.py       # xAI — Management API + local fallback
-├── tests/               # Test suite (76 tests)
+├── tests/               # Test suite (123 tests)
 ├── requirements.txt
 ├── setup.py             # py2app bundling
 └── pytest.ini

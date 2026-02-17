@@ -42,12 +42,19 @@ def check_and_notify(
         with _alerts_lock:
             already_sent = alert_key in _sent_alerts
         if usage_percent >= threshold and not already_sent:
-            _send_notification(
+            delivered = _send_notification(
                 title="AI Budget Alert",
                 message=f"{provider_name} has reached {usage_percent:.0f}% of budget ({threshold}% threshold).",
             )
-            with _alerts_lock:
-                _sent_alerts.add(alert_key)
+            if delivered:
+                with _alerts_lock:
+                    _sent_alerts.add(alert_key)
+            else:
+                logger.warning(
+                    "Notification for %s at %d%% failed; will retry next refresh.",
+                    provider_id,
+                    threshold,
+                )
 
 
 def _send_notification(title: str, message: str) -> bool:

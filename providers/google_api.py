@@ -30,6 +30,8 @@ class GoogleProvider(BaseProvider):
 
         Google doesn't have a simple billing API for API-key users,
         so we rely on local log parsing.
+
+        Raises on tracker failure so the caller can preserve last-known-good data.
         """
         if self._tracker is None:
             logger.info("No local tracker for Google; returning zero usage.")
@@ -39,20 +41,13 @@ class GoogleProvider(BaseProvider):
                 monthly_budget=budget,
             )
 
-        try:
-            tracked = self._tracker.get_monthly_usage("google")
-            return UsageData(
-                provider_id=self.provider_id,
-                provider_name=self.provider_name,
-                current_spend=tracked["spend"],
-                monthly_budget=budget,
-                tokens_in=tracked["tokens_in"],
-                tokens_out=tracked["tokens_out"],
-            )
-        except Exception as e:
-            logger.error("Failed to get Google usage from local tracker: %s", e)
-            return UsageData(
-                provider_id=self.provider_id,
-                provider_name=self.provider_name,
-                monthly_budget=budget,
-            )
+        # Let tracker errors propagate — caller preserves last-known-good
+        tracked = self._tracker.get_monthly_usage("google")
+        return UsageData(
+            provider_id=self.provider_id,
+            provider_name=self.provider_name,
+            current_spend=tracked["spend"],
+            monthly_budget=budget,
+            tokens_in=tracked["tokens_in"],
+            tokens_out=tracked["tokens_out"],
+        )

@@ -12,6 +12,13 @@ from datetime import datetime, timezone
 
 import rumps
 
+try:
+    from PyObjCTools import AppHelper
+
+    _has_apphelper = True
+except ImportError:  # pragma: no cover
+    _has_apphelper = False
+
 import config as app_config
 import keychain
 import notifier
@@ -43,11 +50,12 @@ class BudgetDashboardApp(rumps.App):
         self.tracker = LocalTracker(log_path)
 
         # Initialize providers
+        xai_team_id = app_config.get_xai_team_id(self.cfg)
         self.providers = {
             "anthropic": AnthropicProvider(),
             "openai": OpenAIProvider(),
             "google": GoogleProvider(tracker=self.tracker),
-            "xai": XAIProvider(tracker=self.tracker),
+            "xai": XAIProvider(tracker=self.tracker, team_id=xai_team_id),
         }
 
         # Usage data cache — protected by _data_lock
@@ -193,9 +201,10 @@ class BudgetDashboardApp(rumps.App):
     def _format_updated_time(self) -> str:
         """Format the 'last updated' string."""
         latest = None
-        for usage in self.usage_data.values():
-            if latest is None or usage.last_updated > latest:
-                latest = usage.last_updated
+        with self._data_lock:
+            for usage in self.usage_data.values():
+                if latest is None or usage.last_updated > latest:
+                    latest = usage.last_updated
 
         if latest is None:
             return "\u21bb Not yet updated"
@@ -247,6 +256,9 @@ class BudgetDashboardApp(rumps.App):
                 logger.error("Provider %s fetch raised: %s", pid, e)
                 continue
 
+            if usage.error:
+                logger.warning("Provider %s partial error: %s", pid, usage.error)
+
             with self._data_lock:
                 self.usage_data[pid] = usage
 
@@ -281,11 +293,24 @@ class BudgetDashboardApp(rumps.App):
         thread.start()
 
     def _schedule_ui_update(self) -> None:
-        """Schedule a one-shot timer to update UI on the main thread."""
-        rumps.Timer(self._do_ui_update, 0.0).start()
+        """Dispatch UI update to the main thread.
 
-    def _do_ui_update(self, timer) -> None:
-        """Callback that runs on the main thread to update UI."""
+        Uses PyObjC AppHelper.callAfter to safely mutate rumps UI elements
+        from a background thread. Falls back to rumps.Timer if PyObjC is
+        unavailable (e.g., in tests).
+        """
+        if _has_apphelper:
+            AppHelper.callAfter(self._do_ui_update)
+        else:
+            rumps.Timer(self._do_ui_update_timer, 0.0).start()
+
+    def _do_ui_update(self) -> None:
+        """Update UI elements — must be called on the main thread."""
+        self._update_title()
+        self._build_menu()
+
+    def _do_ui_update_timer(self, timer) -> None:
+        """Timer-based UI update fallback (for environments without PyObjC)."""
         timer.stop()
         self._update_title()
         self._build_menu()

@@ -46,6 +46,14 @@ class TestUsageData:
         usage = UsageData("test", "Test", tokens_in=500, tokens_out=100)
         assert usage.format_tokens() == "500 in / 100 out"
 
+    def test_error_field_default_none(self):
+        usage = UsageData("test", "Test")
+        assert usage.error is None
+
+    def test_error_field_set(self):
+        usage = UsageData("test", "Test", error="Something went wrong")
+        assert usage.error == "Something went wrong"
+
 
 class TestFormatCount:
     def test_millions(self):
@@ -164,14 +172,13 @@ class TestAnthropicProvider:
         assert usage.current_spend == pytest.approx(8.0)
 
     @patch("providers.anthropic_api.requests.get")
-    def test_api_error(self, mock_get):
+    def test_api_error_raises(self, mock_get):
+        """Cost API failure should raise so caller preserves last-known-good data."""
         mock_get.side_effect = Exception("Connection error")
 
         provider = AnthropicProvider()
-        usage = provider.fetch_usage("test-key", 80.0)
-
-        assert usage.current_spend == 0.0
-        assert usage.monthly_budget == 80.0
+        with pytest.raises(Exception, match="Connection error"):
+            provider.fetch_usage("test-key", 80.0)
 
     @patch("providers.anthropic_api.requests.get")
     def test_usage_api_failure_still_returns_cost(self, mock_get):
@@ -192,6 +199,8 @@ class TestAnthropicProvider:
         assert usage.current_spend == pytest.approx(10.0)
         assert usage.tokens_in == 0  # No token data available
         assert usage.tokens_out == 0
+        assert usage.error is not None
+        assert "Token fetch failed" in usage.error
 
 
 class TestOpenAIProvider:
@@ -286,13 +295,13 @@ class TestOpenAIProvider:
         assert usage.current_spend == pytest.approx(5.25)
 
     @patch("providers.openai_api.requests.get")
-    def test_api_error(self, mock_get):
+    def test_api_error_raises(self, mock_get):
+        """API failure should raise so caller preserves last-known-good data."""
         mock_get.side_effect = Exception("Timeout")
 
         provider = OpenAIProvider()
-        usage = provider.fetch_usage("test-key", 60.0)
-
-        assert usage.current_spend == 0.0
+        with pytest.raises(Exception, match="Timeout"):
+            provider.fetch_usage("test-key", 60.0)
 
 
 class TestGoogleProvider:
@@ -318,14 +327,14 @@ class TestGoogleProvider:
         assert usage.tokens_in == 2_100_000
         mock_tracker.get_monthly_usage.assert_called_once_with("google")
 
-    def test_tracker_error(self):
+    def test_tracker_error_raises(self):
+        """Tracker failure should raise so caller preserves last-known-good data."""
         mock_tracker = MagicMock()
         mock_tracker.get_monthly_usage.side_effect = Exception("Parse error")
 
         provider = GoogleProvider(tracker=mock_tracker)
-        usage = provider.fetch_usage(None, 30.0)
-
-        assert usage.current_spend == 0.0
+        with pytest.raises(Exception, match="Parse error"):
+            provider.fetch_usage(None, 30.0)
 
 
 class TestXAIProvider:
@@ -401,4 +410,104 @@ class TestXAIProvider:
         usage = provider.fetch_usage("team1:key1", 30.0)
 
         assert usage.current_spend == 3.00
+        assert usage.error is not None
+        assert "Billing API failed" in usage.error
         mock_tracker.get_monthly_usage.assert_called_once_with("xai")
+
+    @patch("providers.xai_api.requests.get")
+    def test_billing_api_failure_no_tracker_raises(self, mock_get):
+        """When Management API fails and no tracker, should raise."""
+        mock_get.side_effect = Exception("API error")
+
+        provider = XAIProvider(tracker=None)
+        with pytest.raises(Exception, match="API error"):
+            provider.fetch_usage("team1:key1", 30.0)
+
+    @patch("providers.xai_api.requests.get")
+    def test_config_team_id_used(self, mock_get):
+        """team_id from config should be used instead of key parsing."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"total": 10.0}
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        provider = XAIProvider(tracker=None, team_id="config-team")
+        usage = provider.fetch_usage("plain-mgmt-key", 30.0)
+
+        assert usage.current_spend == pytest.approx(10.0)
+        call_url = mock_get.call_args[0][0]
+        assert "config-team" in call_url
+
+    @patch("providers.xai_api.requests.get")
+    def test_config_team_id_strips_legacy_prefix(self, mock_get):
+        """Config team_id should strip team_id prefix from legacy key format."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"total": 5.0}
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        provider = XAIProvider(tracker=None, team_id="config-team")
+        usage = provider.fetch_usage("old-team:mgmt-key-123", 30.0)
+
+        assert usage.current_spend == pytest.approx(5.0)
+        # Should use config-team, not old-team
+        call_url = mock_get.call_args[0][0]
+        assert "config-team" in call_url
+        # Auth header should use mgmt-key-123, not old-team:mgmt-key-123
+        call_headers = mock_get.call_args[1]["headers"]
+        assert call_headers["Authorization"] == "Bearer mgmt-key-123"
+
+    @patch("providers.xai_api.requests.get")
+    def test_billing_api_usage_tokens(self, mock_get):
+        """Test parsing usage/token fields from billing response."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "total": 20.0,
+            "usage": {
+                "input_tokens": 1_000_000,
+                "output_tokens": 250_000,
+            },
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        provider = XAIProvider(tracker=None)
+        usage = provider.fetch_usage("team1:key1", 30.0)
+
+        assert usage.current_spend == pytest.approx(20.0)
+        assert usage.tokens_in == 1_000_000
+        assert usage.tokens_out == 250_000
+
+    @patch("providers.xai_api.requests.get")
+    def test_billing_api_cents_unit(self, mock_get):
+        """Test currency_unit=cents conversion."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "total": 1500,
+            "currency_unit": "cents",
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        provider = XAIProvider(tracker=None)
+        usage = provider.fetch_usage("team1:key1", 30.0)
+
+        assert usage.current_spend == pytest.approx(15.0)
+
+    @patch("providers.xai_api.requests.get")
+    def test_billing_api_line_items_fallback(self, mock_get):
+        """Test line_items parsing when top-level total is zero."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "line_items": [
+                {"amount": 5.0},
+                {"amount": 3.50},
+            ],
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        provider = XAIProvider(tracker=None)
+        usage = provider.fetch_usage("team1:key1", 30.0)
+
+        assert usage.current_spend == pytest.approx(8.50)
