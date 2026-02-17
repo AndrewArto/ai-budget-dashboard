@@ -7,7 +7,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from tracker import LocalTracker, _calculate_cost, _get_provider_for_model, _get_pricing
+from tracker import (
+    LocalTracker,
+    _calculate_cost,
+    _get_provider_for_model,
+    _get_pricing,
+    _safe_int,
+    _safe_float,
+)
 
 
 class TestModelMapping:
@@ -48,6 +55,31 @@ class TestPricing:
 
     def test_unknown_model(self):
         assert _get_pricing("totally-unknown-model") is None
+
+
+class TestSafeCoercion:
+    def test_safe_int_valid(self):
+        assert _safe_int(42) == 42
+        assert _safe_int("100") == 100
+        assert _safe_int(3.7) == 3
+
+    def test_safe_int_invalid(self):
+        assert _safe_int("not_a_number") == 0
+        assert _safe_int(None) == 0
+        assert _safe_int([1, 2]) == 0
+
+    def test_safe_int_custom_default(self):
+        assert _safe_int(None, default=-1) == -1
+
+    def test_safe_float_valid(self):
+        assert _safe_float(3.14) == pytest.approx(3.14)
+        assert _safe_float("2.5") == pytest.approx(2.5)
+        assert _safe_float(42) == 42.0
+
+    def test_safe_float_invalid(self):
+        assert _safe_float("not_a_number") == 0.0
+        assert _safe_float(None) == 0.0
+        assert _safe_float({"value": 1}) == 0.0
 
 
 class TestCalculateCost:
@@ -228,3 +260,88 @@ class TestLocalTracker:
 
         # Expected: (2M/1M)*1.25 + (400K/1M)*10.0 = 2.50 + 4.00 = 6.50
         assert result["spend"] == pytest.approx(6.50)
+
+    def test_string_token_values_coerced(self, log_dir):
+        """Token values as strings should be coerced to int."""
+        now = datetime.now(timezone.utc)
+        entries = [
+            {
+                "timestamp": now.isoformat(),
+                "model": "grok-3",
+                "input_tokens": "500000",
+                "output_tokens": "120000",
+            },
+        ]
+        self._write_jsonl(log_dir, "usage.jsonl", entries)
+
+        tracker = LocalTracker(log_dir)
+        result = tracker.get_monthly_usage("xai")
+
+        assert result["tokens_in"] == 500_000
+        assert result["tokens_out"] == 120_000
+
+    def test_malformed_token_values_default_to_zero(self, log_dir):
+        """Non-numeric token values should default to 0."""
+        now = datetime.now(timezone.utc)
+        entries = [
+            {
+                "timestamp": now.isoformat(),
+                "model": "grok-3",
+                "input_tokens": "not_a_number",
+                "output_tokens": None,
+                "cost": 1.0,
+            },
+        ]
+        self._write_jsonl(log_dir, "usage.jsonl", entries)
+
+        tracker = LocalTracker(log_dir)
+        result = tracker.get_monthly_usage("xai")
+
+        assert result["tokens_in"] == 0
+        assert result["tokens_out"] == 0
+        assert result["spend"] == 1.0
+
+    def test_string_cost_value_coerced(self, log_dir):
+        """Cost as string should be coerced to float."""
+        now = datetime.now(timezone.utc)
+        entries = [
+            {
+                "timestamp": now.isoformat(),
+                "provider": "xai",
+                "model": "grok-3",
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cost": "2.50",
+            },
+        ]
+        self._write_jsonl(log_dir, "usage.jsonl", entries)
+
+        tracker = LocalTracker(log_dir)
+        result = tracker.get_monthly_usage("xai")
+
+        assert result["spend"] == pytest.approx(2.50)
+
+    def test_non_dict_entries_skipped(self, log_dir):
+        """Non-dict entries in log files should be silently skipped."""
+        now = datetime.now(timezone.utc)
+        filepath = os.path.join(log_dir, "usage.json")
+        with open(filepath, "w") as f:
+            json.dump(
+                [
+                    "not_a_dict",
+                    42,
+                    {
+                        "timestamp": now.isoformat(),
+                        "model": "grok-3",
+                        "input_tokens": 100,
+                        "output_tokens": 50,
+                    },
+                ],
+                f,
+            )
+
+        tracker = LocalTracker(log_dir)
+        result = tracker.get_monthly_usage("xai")
+
+        assert result["tokens_in"] == 100
+        assert result["tokens_out"] == 50

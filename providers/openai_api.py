@@ -1,4 +1,4 @@
-"""OpenAI provider — fetches usage via /v1/organization/costs."""
+"""OpenAI provider — fetches cost data via /v1/organization/costs."""
 
 from __future__ import annotations
 
@@ -29,7 +29,9 @@ class OpenAIProvider(BaseProvider):
             )
 
         now = datetime.now(timezone.utc)
-        start_of_month = int(now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
+        start_of_month = int(
+            now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+        )
         end_ts = int(now.timestamp())
 
         try:
@@ -53,45 +55,54 @@ class OpenAIProvider(BaseProvider):
     def _call_costs_api(
         self, api_key: str, start_ts: int, end_ts: int
     ) -> dict:
-        """Call the OpenAI organization costs API."""
+        """Call the OpenAI organization costs API with pagination.
+
+        The amount field is a nested object: {"value": float, "currency": "usd"}.
+        The Costs API does NOT return token counts — those come from the
+        separate Usage API. Pagination via has_more / next_page.
+        """
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
 
         url = f"{OPENAI_API_BASE}/v1/organization/costs"
-        params = {
-            "start_time": start_ts,
-            "end_time": end_ts,
-        }
-
-        resp = requests.get(url, headers=headers, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-
         total_spend = 0.0
-        total_tokens_in = 0
-        total_tokens_out = 0
+        page = None
 
-        # Parse cost data — typically has daily/bucketed entries
-        entries = data.get("data", [])
-        if isinstance(entries, list):
-            for entry in entries:
-                # Each entry may have "results" with line items
-                results = entry.get("results", [])
+        while True:
+            params = {
+                "start_time": start_ts,
+                "end_time": end_ts,
+                "limit": 180,
+            }
+            if page:
+                params["page"] = page
+
+            resp = requests.get(url, headers=headers, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+
+            buckets = data.get("data", [])
+            for bucket in buckets:
+                results = bucket.get("results", [])
                 if isinstance(results, list):
                     for result in results:
                         amount = result.get("amount", {})
-                        total_spend += amount.get("value", 0.0)
-                        tokens_in = result.get("input_tokens", 0)
-                        tokens_out = result.get("output_tokens", 0)
-                        total_tokens_in += tokens_in
-                        total_tokens_out += tokens_out
-                else:
-                    total_spend += entry.get("cost", entry.get("amount", 0.0))
+                        if isinstance(amount, dict):
+                            total_spend += float(amount.get("value", 0.0))
+                        elif isinstance(amount, (int, float)):
+                            total_spend += float(amount)
+
+            if not data.get("has_more", False):
+                break
+            next_page = data.get("next_page")
+            if not next_page:
+                break
+            page = next_page
 
         return {
-            "spend": total_spend,
-            "tokens_in": total_tokens_in,
-            "tokens_out": total_tokens_out,
+            "spend": round(total_spend, 4),
+            "tokens_in": 0,
+            "tokens_out": 0,
         }

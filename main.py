@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from datetime import datetime, timezone
 
 import rumps
@@ -51,8 +50,12 @@ class BudgetDashboardApp(rumps.App):
             "xai": XAIProvider(tracker=self.tracker),
         }
 
-        # Usage data cache
+        # Usage data cache — protected by _data_lock
         self.usage_data: dict[str, UsageData] = {}
+        self._data_lock = threading.Lock()
+
+        # Refresh concurrency — only one refresh at a time
+        self._refresh_lock = threading.Lock()
 
         # Build initial menu
         self._build_menu()
@@ -80,10 +83,13 @@ class BudgetDashboardApp(rumps.App):
 
         # Provider sections
         provider_order = ["anthropic", "openai", "google", "xai"]
+        with self._data_lock:
+            usage_snapshot = dict(self.usage_data)
+
         for pid in provider_order:
             if not app_config.is_provider_enabled(self.cfg, pid):
                 continue
-            usage = self.usage_data.get(pid)
+            usage = usage_snapshot.get(pid)
             if usage:
                 self._add_provider_menu_items(usage)
             else:
@@ -158,9 +164,10 @@ class BudgetDashboardApp(rumps.App):
         """Get total spend and total budget across enabled providers."""
         total_spend = 0.0
         total_budget = app_config.get_total_budget(self.cfg)
-        for pid, usage in self.usage_data.items():
-            if app_config.is_provider_enabled(self.cfg, pid):
-                total_spend += usage.current_spend
+        with self._data_lock:
+            for pid, usage in self.usage_data.items():
+                if app_config.is_provider_enabled(self.cfg, pid):
+                    total_spend += usage.current_spend
         return total_spend, total_budget
 
     def _update_title(self) -> None:
@@ -209,12 +216,19 @@ class BudgetDashboardApp(rumps.App):
             return f"\u21bb Updated {minutes} min ago"
 
     def _refresh_data(self) -> None:
-        """Fetch usage data from all enabled providers."""
+        """Fetch usage data from all enabled providers.
+
+        Preserves last-known-good data on per-provider failure:
+        only updates usage_data for a provider if fetch succeeds
+        (non-zero spend or explicit zero from API).
+        """
         # Check for month rollover
         current_month = datetime.now(timezone.utc).month
         if current_month != self._last_month:
             self._last_month = current_month
             notifier.reset_alerts()
+            with self._data_lock:
+                self.usage_data.clear()
             logger.info("Month rollover detected — alerts reset.")
 
         thresholds = app_config.get_alert_thresholds(self.cfg)
@@ -227,8 +241,14 @@ class BudgetDashboardApp(rumps.App):
             budget = app_config.get_provider_budget(self.cfg, pid)
 
             logger.info("Fetching usage for %s...", pid)
-            usage = provider.fetch_usage(api_key, budget)
-            self.usage_data[pid] = usage
+            try:
+                usage = provider.fetch_usage(api_key, budget)
+            except Exception as e:
+                logger.error("Provider %s fetch raised: %s", pid, e)
+                continue
+
+            with self._data_lock:
+                self.usage_data[pid] = usage
 
             # Check budget alerts
             notifier.check_and_notify(
@@ -239,19 +259,36 @@ class BudgetDashboardApp(rumps.App):
             )
 
     def _refresh_in_background(self) -> None:
-        """Run data refresh in a background thread."""
+        """Run data refresh in a background thread.
+
+        Uses _refresh_lock to prevent overlapping refreshes.
+        Schedules UI updates on the main thread via rumps timer.
+        """
         def _do_refresh():
+            if not self._refresh_lock.acquire(blocking=False):
+                logger.debug("Refresh already in progress, skipping.")
+                return
             try:
                 self._refresh_data()
             except Exception as e:
                 logger.error("Background refresh failed: %s", e)
             finally:
-                # Update UI on main thread
-                self._update_title()
-                self._build_menu()
+                self._refresh_lock.release()
+                # Schedule UI update on main thread
+                self._schedule_ui_update()
 
         thread = threading.Thread(target=_do_refresh, daemon=True)
         thread.start()
+
+    def _schedule_ui_update(self) -> None:
+        """Schedule a one-shot timer to update UI on the main thread."""
+        rumps.Timer(self._do_ui_update, 0.0).start()
+
+    def _do_ui_update(self, timer) -> None:
+        """Callback that runs on the main thread to update UI."""
+        timer.stop()
+        self._update_title()
+        self._build_menu()
 
     def _auto_refresh(self, _timer) -> None:
         """Timer callback for auto-refresh."""
