@@ -57,6 +57,33 @@ class TestCheckAndNotify:
         notifier.check_and_notify("Anthropic", "anthropic", 85.0, [80, 95])
         assert mock_send.call_count == 2
 
+    @patch("notifier._send_notification", return_value=False)
+    def test_failed_notification_not_marked_sent(self, mock_send):
+        """If notification delivery fails, alert should NOT be marked as sent."""
+        notifier.check_and_notify("Anthropic", "anthropic", 85.0, [80, 95])
+        mock_send.assert_called_once()
+
+        # Since delivery failed, the alert should retry on next call
+        notifier.check_and_notify("Anthropic", "anthropic", 85.0, [80, 95])
+        assert mock_send.call_count == 2
+
+    @patch("notifier._send_notification")
+    def test_retry_succeeds_after_failure(self, mock_send):
+        """Alert retries on next refresh and succeeds."""
+        # First attempt fails
+        mock_send.return_value = False
+        notifier.check_and_notify("Anthropic", "anthropic", 85.0, [80, 95])
+        assert mock_send.call_count == 1
+
+        # Second attempt succeeds
+        mock_send.return_value = True
+        notifier.check_and_notify("Anthropic", "anthropic", 85.0, [80, 95])
+        assert mock_send.call_count == 2
+
+        # Third call: already sent, should NOT retry
+        notifier.check_and_notify("Anthropic", "anthropic", 85.0, [80, 95])
+        assert mock_send.call_count == 2
+
 
 class TestSendNotification:
     @patch("notifier.subprocess.run")

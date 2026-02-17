@@ -19,7 +19,10 @@ class OpenAIProvider(BaseProvider):
     provider_name = "OpenAI"
 
     def fetch_usage(self, api_key: str | None, budget: float) -> UsageData:
-        """Fetch usage from OpenAI organization costs API."""
+        """Fetch usage from OpenAI organization costs API.
+
+        Raises on API failure so the caller can preserve last-known-good data.
+        """
         if not api_key:
             logger.warning("No API key for OpenAI; returning zero usage.")
             return UsageData(
@@ -34,23 +37,16 @@ class OpenAIProvider(BaseProvider):
         )
         end_ts = int(now.timestamp())
 
-        try:
-            usage_data = self._call_costs_api(api_key, start_of_month, end_ts)
-            return UsageData(
-                provider_id=self.provider_id,
-                provider_name=self.provider_name,
-                current_spend=usage_data["spend"],
-                monthly_budget=budget,
-                tokens_in=usage_data["tokens_in"],
-                tokens_out=usage_data["tokens_out"],
-            )
-        except Exception as e:
-            logger.error("Failed to fetch OpenAI usage: %s", e)
-            return UsageData(
-                provider_id=self.provider_id,
-                provider_name=self.provider_name,
-                monthly_budget=budget,
-            )
+        # Let API errors propagate — caller preserves last-known-good
+        usage_data = self._call_costs_api(api_key, start_of_month, end_ts)
+        return UsageData(
+            provider_id=self.provider_id,
+            provider_name=self.provider_name,
+            current_spend=usage_data["spend"],
+            monthly_budget=budget,
+            tokens_in=usage_data["tokens_in"],
+            tokens_out=usage_data["tokens_out"],
+        )
 
     def _call_costs_api(
         self, api_key: str, start_ts: int, end_ts: int

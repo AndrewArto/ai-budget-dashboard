@@ -18,6 +18,7 @@ class UsageData:
     tokens_in: int = 0
     tokens_out: int = 0
     last_updated: datetime = field(default_factory=datetime.now)
+    error: str | None = None
 
     @property
     def remaining(self) -> float:

@@ -181,3 +181,145 @@ class TestBudgetDashboardApp:
 
         app._update_title()
         assert "$47.23" in app.title
+
+    @patch("keychain.get_api_key", return_value=None)
+    @patch("config.load_config")
+    def test_schedule_ui_update_uses_timer_fallback(self, mock_config, mock_keychain):
+        """Without PyObjC, _schedule_ui_update should use rumps.Timer fallback."""
+        mock_config.return_value = {
+            "providers": {
+                "anthropic": {"budget": 80.0, "enabled": True},
+                "openai": {"budget": 60.0, "enabled": True},
+                "google": {"budget": 30.0, "enabled": True},
+                "xai": {"budget": 30.0, "enabled": True},
+            },
+            "refreshIntervalMinutes": 15,
+            "alertThresholds": [80, 95],
+            "displayMode": "compact",
+            "localTrackingLogPath": "/tmp/test-logs/",
+            "xaiTeamId": "",
+        }
+
+        import main as app_main
+
+        # Force fallback path (no AppHelper)
+        original = app_main._has_apphelper
+        app_main._has_apphelper = False
+        try:
+            app = app_main.BudgetDashboardApp()
+            app._schedule_ui_update()
+            # Should create a FakeTimer (from our mocked rumps)
+        finally:
+            app_main._has_apphelper = original
+
+    @patch("keychain.get_api_key", return_value=None)
+    @patch("config.load_config")
+    def test_schedule_ui_update_uses_apphelper(self, mock_config, mock_keychain):
+        """With PyObjC, _schedule_ui_update should use AppHelper.callAfter."""
+        mock_config.return_value = {
+            "providers": {
+                "anthropic": {"budget": 80.0, "enabled": True},
+                "openai": {"budget": 60.0, "enabled": True},
+                "google": {"budget": 30.0, "enabled": True},
+                "xai": {"budget": 30.0, "enabled": True},
+            },
+            "refreshIntervalMinutes": 15,
+            "alertThresholds": [80, 95],
+            "displayMode": "compact",
+            "localTrackingLogPath": "/tmp/test-logs/",
+            "xaiTeamId": "",
+        }
+
+        import main as app_main
+
+        original = app_main._has_apphelper
+        app_main._has_apphelper = True
+        mock_callafter = MagicMock()
+
+        # Temporarily inject mock AppHelper
+        import types
+        fake_helper = types.ModuleType("PyObjCTools.AppHelper")
+        fake_helper.callAfter = mock_callafter
+
+        with patch.dict(sys.modules, {"PyObjCTools.AppHelper": fake_helper}):
+            with patch.object(app_main, "AppHelper", fake_helper, create=True):
+                app = app_main.BudgetDashboardApp()
+                # Init triggers background refresh which also calls _schedule_ui_update
+                import time
+                time.sleep(0.1)
+                mock_callafter.reset_mock()
+
+                app._schedule_ui_update()
+                mock_callafter.assert_called_once_with(app._do_ui_update)
+
+        app_main._has_apphelper = original
+
+    @patch("keychain.get_api_key", return_value=None)
+    @patch("config.load_config")
+    def test_refresh_preserves_data_on_provider_error(self, mock_config, mock_keychain):
+        """When a provider raises, old data should be preserved."""
+        mock_config.return_value = {
+            "providers": {
+                "anthropic": {"budget": 80.0, "enabled": True},
+                "openai": {"budget": 60.0, "enabled": True},
+                "google": {"budget": 30.0, "enabled": True},
+                "xai": {"budget": 30.0, "enabled": True},
+            },
+            "refreshIntervalMinutes": 15,
+            "alertThresholds": [80, 95],
+            "displayMode": "compact",
+            "localTrackingLogPath": "/tmp/test-logs/",
+            "xaiTeamId": "",
+        }
+
+        import main as app_main
+        import time
+
+        app = app_main.BudgetDashboardApp()
+
+        # Wait for init background refresh to complete
+        time.sleep(0.2)
+
+        # Set existing data AFTER init refresh completed
+        old_data = UsageData("anthropic", "Anthropic", current_spend=25.0, monthly_budget=80.0)
+        with app._data_lock:
+            app.usage_data["anthropic"] = old_data
+
+        # Make anthropic provider raise
+        app.providers["anthropic"].fetch_usage = MagicMock(side_effect=Exception("API down"))
+
+        # Run refresh — should preserve old data for anthropic
+        app._refresh_data()
+
+        with app._data_lock:
+            assert app.usage_data["anthropic"] is old_data
+            assert app.usage_data["anthropic"].current_spend == 25.0
+
+    @patch("keychain.get_api_key", return_value=None)
+    @patch("config.load_config")
+    def test_format_updated_time_uses_lock(self, mock_config, mock_keychain):
+        """_format_updated_time should acquire _data_lock."""
+        mock_config.return_value = {
+            "providers": {
+                "anthropic": {"budget": 80.0, "enabled": True},
+                "openai": {"budget": 60.0, "enabled": True},
+                "google": {"budget": 30.0, "enabled": True},
+                "xai": {"budget": 30.0, "enabled": True},
+            },
+            "refreshIntervalMinutes": 15,
+            "alertThresholds": [80, 95],
+            "displayMode": "compact",
+            "localTrackingLogPath": "/tmp/test-logs/",
+            "xaiTeamId": "",
+        }
+
+        import main as app_main
+
+        app = app_main.BudgetDashboardApp()
+        app.usage_data["anthropic"] = UsageData(
+            "anthropic", "Anthropic", current_spend=10.0
+        )
+
+        # Should not deadlock — lock is acquired and released properly
+        result = app._format_updated_time()
+        assert "\u21bb" in result  # Contains refresh symbol

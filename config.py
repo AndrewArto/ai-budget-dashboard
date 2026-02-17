@@ -26,6 +26,7 @@ DEFAULT_CONFIG = {
     "alertThresholds": [80, 95],
     "displayMode": "compact",
     "localTrackingLogPath": "~/.openclaw/logs/",
+    "xaiTeamId": "",
 }
 
 PROVIDER_DISPLAY_NAMES = {
@@ -129,6 +130,11 @@ def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(log_path, str) or not log_path.strip():
         config["localTrackingLogPath"] = "~/.openclaw/logs/"
 
+    # Validate xaiTeamId
+    xai_team_id = config.get("xaiTeamId")
+    if not isinstance(xai_team_id, str):
+        config["xaiTeamId"] = ""
+
     return config
 
 
@@ -159,6 +165,11 @@ def get_refresh_interval(config: dict[str, Any]) -> int:
 def get_alert_thresholds(config: dict[str, Any]) -> list[int]:
     """Get alert threshold percentages."""
     return config.get("alertThresholds", [80, 95])
+
+
+def get_xai_team_id(config: dict[str, Any]) -> str:
+    """Get the xAI team ID for Management API billing."""
+    return config.get("xaiTeamId", "")
 
 
 def get_log_path(config: dict[str, Any]) -> str:

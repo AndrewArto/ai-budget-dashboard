@@ -192,3 +192,16 @@ class TestHelpers:
         path = app_config.get_log_path(config)
         assert "openclaw/logs" in path
         assert "~" not in path  # Should be expanded
+
+    def test_get_xai_team_id_default(self):
+        config = app_config.load_config("/nonexistent")
+        assert app_config.get_xai_team_id(config) == ""
+
+    def test_get_xai_team_id_set(self):
+        config = app_config.load_config("/nonexistent")
+        config["xaiTeamId"] = "my-team-123"
+        assert app_config.get_xai_team_id(config) == "my-team-123"
+
+    def test_xai_team_id_validation_non_string(self):
+        config = app_config._validate_config({"xaiTeamId": 123, "providers": {}})
+        assert config["xaiTeamId"] == ""

@@ -19,7 +19,12 @@ class AnthropicProvider(BaseProvider):
     provider_name = "Anthropic"
 
     def fetch_usage(self, api_key: str | None, budget: float) -> UsageData:
-        """Fetch usage from Anthropic Admin API (cost_report + usage_report)."""
+        """Fetch usage from Anthropic Admin API (cost_report + usage_report).
+
+        Raises on cost API failure so the caller can preserve last-known-good
+        data. Token count failures are non-fatal and recorded in the ``error``
+        field.
+        """
         if not api_key:
             logger.warning("No API key for Anthropic; returning zero usage.")
             return UsageData(
@@ -38,33 +43,30 @@ class AnthropicProvider(BaseProvider):
         else:
             end_at = f"{now.year}-{now.month + 1:02d}-01T00:00:00Z"
 
-        try:
-            cost_data = self._call_cost_api(api_key, start_at, end_at)
-            # Supplement with token counts from usage_report
-            tokens_in = 0
-            tokens_out = 0
-            try:
-                usage_data = self._call_usage_api(api_key, start_at, end_at)
-                tokens_in = usage_data["tokens_in"]
-                tokens_out = usage_data["tokens_out"]
-            except Exception as e:
-                logger.warning("Failed to fetch Anthropic token counts: %s", e)
+        # Let cost API errors propagate — caller preserves last-known-good
+        cost_data = self._call_cost_api(api_key, start_at, end_at)
 
-            return UsageData(
-                provider_id=self.provider_id,
-                provider_name=self.provider_name,
-                current_spend=cost_data["spend"],
-                monthly_budget=budget,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-            )
+        # Token counts are supplementary; don't fail the whole fetch
+        tokens_in = 0
+        tokens_out = 0
+        error_msg = None
+        try:
+            usage_data = self._call_usage_api(api_key, start_at, end_at)
+            tokens_in = usage_data["tokens_in"]
+            tokens_out = usage_data["tokens_out"]
         except Exception as e:
-            logger.error("Failed to fetch Anthropic usage: %s", e)
-            return UsageData(
-                provider_id=self.provider_id,
-                provider_name=self.provider_name,
-                monthly_budget=budget,
-            )
+            logger.warning("Failed to fetch Anthropic token counts: %s", e)
+            error_msg = f"Token fetch failed: {e}"
+
+        return UsageData(
+            provider_id=self.provider_id,
+            provider_name=self.provider_name,
+            current_spend=cost_data["spend"],
+            monthly_budget=budget,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            error=error_msg,
+        )
 
     def _call_cost_api(
         self, api_key: str, start_at: str, end_at: str
