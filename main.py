@@ -15,14 +15,13 @@ import rumps
 from PyObjCTools import AppHelper
 
 import config as app_config
-import keychain
 import notifier
 from providers.base import UsageData
 from providers.anthropic_api import AnthropicProvider
 from providers.openai_api import OpenAIProvider
 from providers.google_api import GoogleProvider
 from providers.xai_api import XAIProvider
-from tracker import LocalTracker
+from jsonl_tracker import JsonlTracker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,17 +39,16 @@ class BudgetDashboardApp(rumps.App):
         self.cfg = app_config.load_config()
         self._last_month = datetime.now(timezone.utc).month
 
-        # Initialize local tracker
-        log_path = app_config.get_log_path(self.cfg)
-        self.tracker = LocalTracker(log_path)
+        # Initialize JSONL tracker
+        agents_path = app_config.get_agents_path(self.cfg)
+        self.tracker = JsonlTracker(agents_path)
 
-        # Initialize providers
-        xai_team_id = app_config.get_xai_team_id(self.cfg)
+        # Initialize providers (all use local JSONL tracking)
         self.providers = {
-            "anthropic": AnthropicProvider(),
-            "openai": OpenAIProvider(),
+            "anthropic": AnthropicProvider(tracker=self.tracker),
+            "openai": OpenAIProvider(tracker=self.tracker),
             "google": GoogleProvider(tracker=self.tracker),
-            "xai": XAIProvider(tracker=self.tracker, team_id=xai_team_id),
+            "xai": XAIProvider(tracker=self.tracker),
         }
 
         # Usage data cache — protected by _data_lock
@@ -241,12 +239,11 @@ class BudgetDashboardApp(rumps.App):
             if not app_config.is_provider_enabled(self.cfg, pid):
                 continue
 
-            api_key = keychain.get_api_key(pid)
             budget = app_config.get_provider_budget(self.cfg, pid)
 
             logger.info("Fetching usage for %s...", pid)
             try:
-                usage = provider.fetch_usage(api_key, budget)
+                usage = provider.fetch_usage(None, budget)
             except Exception as e:
                 logger.error("Provider %s fetch raised: %s", pid, e)
                 continue
