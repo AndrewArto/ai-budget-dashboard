@@ -25,8 +25,7 @@ DEFAULT_CONFIG = {
     "refreshIntervalMinutes": 15,
     "alertThresholds": [80, 95],
     "displayMode": "compact",
-    "localTrackingLogPath": "~/.openclaw/logs/",
-    "xaiTeamId": "",
+    "agentsPath": "~/.openclaw/agents",
 }
 
 PROVIDER_DISPLAY_NAMES = {
@@ -125,15 +124,10 @@ def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
             # Validate enabled
             pconf["enabled"] = bool(pconf.get("enabled", False))
 
-    # Validate localTrackingLogPath
-    log_path = config.get("localTrackingLogPath")
-    if not isinstance(log_path, str) or not log_path.strip():
-        config["localTrackingLogPath"] = "~/.openclaw/logs/"
-
-    # Validate xaiTeamId
-    xai_team_id = config.get("xaiTeamId")
-    if not isinstance(xai_team_id, str):
-        config["xaiTeamId"] = ""
+    # Validate agentsPath
+    agents_path = config.get("agentsPath")
+    if not isinstance(agents_path, str) or not agents_path.strip():
+        config["agentsPath"] = "~/.openclaw/agents"
 
     return config
 
@@ -167,14 +161,9 @@ def get_alert_thresholds(config: dict[str, Any]) -> list[int]:
     return config.get("alertThresholds", [80, 95])
 
 
-def get_xai_team_id(config: dict[str, Any]) -> str:
-    """Get the xAI team ID for Management API billing."""
-    return config.get("xaiTeamId", "")
-
-
-def get_log_path(config: dict[str, Any]) -> str:
-    """Get the local tracking log path, expanded."""
-    raw = config.get("localTrackingLogPath", "~/.openclaw/logs/")
+def get_agents_path(config: dict[str, Any]) -> str:
+    """Get the OpenClaw agents directory path, expanded."""
+    raw = config.get("agentsPath", "~/.openclaw/agents")
     return os.path.expanduser(raw)
 
 
