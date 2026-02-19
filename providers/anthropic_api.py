@@ -17,8 +17,11 @@ logger = logging.getLogger(__name__)
 
 RATELIMIT_SNAPSHOT_PATH = os.path.expanduser("~/.openclaw/state/anthropic-ratelimit.json")
 
-# Monthly subscription price (for reference display only)
-CLAUDE_MAX_MONTHLY = 100.0
+# Claude Max plan price (EUR, monthly)
+# Max = €150, Max 5x = €100 (Andrey downgrades to 5x on Mar 1, 2026)
+CLAUDE_MAX_MONTHLY_EUR = 150.0
+# Extra usage cap
+EXTRA_USAGE_LIMIT_EUR = 100.0
 
 
 class AnthropicProvider(BaseProvider):
@@ -42,28 +45,35 @@ class AnthropicProvider(BaseProvider):
         tracked = self._tracker.get_monthly_usage("anthropic")
         requests = tracked.get("requests", 0)
 
-        # Build subscription label with real usage info
+        # Build subscription label
         label = f"Max \u2022 {_format_count(tracked['tokens_in'])} tok \u2022 {requests:,} req"
 
-        # Try to read rate-limit snapshot for extra context
+        # Try to read rate-limit snapshot for session/weekly limits
         ratelimit = self._read_ratelimit_snapshot()
+        ratelimit_info = ""
         if ratelimit:
-            remaining = ratelimit.get("headers", {}).get(
-                "anthropic-ratelimit-unified-remaining"
-            )
-            if remaining is not None:
-                label = f"Max \u2022 {remaining} remaining"
+            headers = ratelimit.get("headers", {})
+            remaining = headers.get("anthropic-ratelimit-unified-remaining")
+            limit = headers.get("anthropic-ratelimit-unified-limit")
+            if remaining is not None and limit is not None:
+                try:
+                    pct = round((1 - int(remaining) / int(limit)) * 100)
+                    ratelimit_info = f"Session: {pct}%"
+                    label = f"Max \u2022 Session {pct}%"
+                except (ValueError, ZeroDivisionError):
+                    pass
 
         return UsageData(
             provider_id=self.provider_id,
             provider_name=self.provider_name,
-            current_spend=CLAUDE_MAX_MONTHLY,
-            monthly_budget=CLAUDE_MAX_MONTHLY,
+            current_spend=CLAUDE_MAX_MONTHLY_EUR,
+            monthly_budget=CLAUDE_MAX_MONTHLY_EUR + EXTRA_USAGE_LIMIT_EUR,
             tokens_in=tracked["tokens_in"],
             tokens_out=tracked["tokens_out"],
             requests=requests,
             is_subscription=True,
             subscription_label=label,
+            error=ratelimit_info if ratelimit_info else None,
         )
 
     @staticmethod
