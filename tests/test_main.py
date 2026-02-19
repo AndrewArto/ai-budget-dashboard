@@ -111,13 +111,15 @@ class TestBudgetDashboardApp:
         import main as app_main
         app = app_main.BudgetDashboardApp()
         app.usage_data = {
-            "anthropic": UsageData("anthropic", "Anthropic", current_spend=28.40, monthly_budget=80.0),
+            "anthropic": UsageData("anthropic", "Anthropic", current_spend=100.0,
+                                   monthly_budget=100.0, is_subscription=True),
             "openai": UsageData("openai", "OpenAI", current_spend=12.30, monthly_budget=60.0),
         }
 
         total_spend, total_budget = app._get_totals()
-        assert total_spend == pytest.approx(40.70)
-        assert total_budget == 200.0
+        # Subscription providers excluded from totals
+        assert total_spend == pytest.approx(12.30)
+        assert total_budget == 60.0
 
     @patch("config.load_config")
     def test_progress_bar(self, mock_config):

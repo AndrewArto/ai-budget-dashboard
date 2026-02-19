@@ -29,22 +29,25 @@ class TestAnthropicProvider:
         usage = provider.fetch_usage(None, budget=100.0)
 
         assert usage.provider_id == "anthropic"
-        assert usage.current_spend == 2.50
+        assert usage.is_subscription is True
         assert usage.tokens_in == 20000
         assert usage.tokens_out == 8000
-        assert usage.monthly_budget == 100.0
+        assert usage.requests == 3
+        assert "Max" in usage.subscription_label
         tracker.get_monthly_usage.assert_called_once_with("anthropic")
 
     def test_fetch_without_tracker(self):
         provider = AnthropicProvider(tracker=None)
         usage = provider.fetch_usage(None, budget=100.0)
-        assert usage.current_spend == 0.0
+        assert usage.is_subscription is True
+        assert "Claude Max" in usage.subscription_label
 
-    def test_usage_percent(self):
+    def test_format_spend_shows_subscription(self):
         tracker = _make_tracker_mock(spend=75.0)
         provider = AnthropicProvider(tracker=tracker)
         usage = provider.fetch_usage(None, budget=100.0)
-        assert usage.usage_percent == 75.0
+        assert "Max" in usage.format_spend()
+        assert "$" not in usage.format_spend()
 
 
 class TestOpenAIProvider:

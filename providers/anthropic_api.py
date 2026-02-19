@@ -1,7 +1,8 @@
 """Anthropic provider -- reads usage from OpenClaw session JSONL files.
 
 For Claude Max (subscription/OAuth) users there is no billing API.
-Cost is calculated from token counts using the pricing table.
+Shows token usage and request count instead of fake dollar amounts.
+Rate-limit data shown when available (after openclaw/openclaw#20428).
 """
 
 from __future__ import annotations
@@ -10,11 +11,14 @@ import json
 import logging
 import os
 
-from providers.base import BaseProvider, UsageData
+from providers.base import BaseProvider, UsageData, _format_count
 
 logger = logging.getLogger(__name__)
 
 RATELIMIT_SNAPSHOT_PATH = os.path.expanduser("~/.openclaw/state/anthropic-ratelimit.json")
+
+# Monthly subscription price (for reference display only)
+CLAUDE_MAX_MONTHLY = 100.0
 
 
 class AnthropicProvider(BaseProvider):
@@ -31,28 +35,35 @@ class AnthropicProvider(BaseProvider):
                 provider_id=self.provider_id,
                 provider_name=self.provider_name,
                 monthly_budget=budget,
+                is_subscription=True,
+                subscription_label="Claude Max",
             )
 
         tracked = self._tracker.get_monthly_usage("anthropic")
+        requests = tracked.get("requests", 0)
+
+        # Build subscription label with real usage info
+        label = f"Max \u2022 {_format_count(tracked['tokens_in'])} tok \u2022 {requests:,} req"
 
         # Try to read rate-limit snapshot for extra context
         ratelimit = self._read_ratelimit_snapshot()
-        error_msg = None
         if ratelimit:
             remaining = ratelimit.get("headers", {}).get(
                 "anthropic-ratelimit-unified-remaining"
             )
             if remaining is not None:
-                error_msg = f"Rate limit remaining: {remaining}"
+                label = f"Max \u2022 {remaining} remaining"
 
         return UsageData(
             provider_id=self.provider_id,
             provider_name=self.provider_name,
-            current_spend=tracked["spend"],
-            monthly_budget=budget,
+            current_spend=CLAUDE_MAX_MONTHLY,
+            monthly_budget=CLAUDE_MAX_MONTHLY,
             tokens_in=tracked["tokens_in"],
             tokens_out=tracked["tokens_out"],
-            error=error_msg,
+            requests=requests,
+            is_subscription=True,
+            subscription_label=label,
         )
 
     @staticmethod

@@ -127,23 +127,33 @@ class BudgetDashboardApp(rumps.App):
 
     def _add_provider_menu_items(self, usage: UsageData) -> None:
         """Add menu items for a single provider."""
-        # Provider name + spend
+        # Provider name + spend/label
         spend_line = f"{usage.provider_name}    {usage.format_spend()}"
         item = rumps.MenuItem(spend_line)
         item.set_callback(None)
         self.menu.add(item)
 
-        # Progress bar
-        bar = self._make_progress_bar(usage.usage_percent)
-        bar_item = rumps.MenuItem(f"  {bar}  {usage.usage_percent:.0f}%")
-        bar_item.set_callback(None)
-        self.menu.add(bar_item)
+        if usage.is_subscription:
+            # Subscription providers: show token counts and requests
+            if usage.tokens_in > 0 or usage.tokens_out > 0:
+                tokens_item = rumps.MenuItem(f"  {usage.format_tokens()}")
+                tokens_item.set_callback(None)
+                self.menu.add(tokens_item)
+            if usage.requests > 0:
+                req_item = rumps.MenuItem(f"  {usage.requests:,} requests")
+                req_item.set_callback(None)
+                self.menu.add(req_item)
+        else:
+            # Pay-per-use providers: show progress bar
+            bar = self._make_progress_bar(usage.usage_percent)
+            bar_item = rumps.MenuItem(f"  {bar}  {usage.usage_percent:.0f}%")
+            bar_item.set_callback(None)
+            self.menu.add(bar_item)
 
-        # Token counts
-        if usage.tokens_in > 0 or usage.tokens_out > 0:
-            tokens_item = rumps.MenuItem(f"  {usage.format_tokens()}")
-            tokens_item.set_callback(None)
-            self.menu.add(tokens_item)
+            if usage.tokens_in > 0 or usage.tokens_out > 0:
+                tokens_item = rumps.MenuItem(f"  {usage.format_tokens()}")
+                tokens_item.set_callback(None)
+                self.menu.add(tokens_item)
 
         self.menu.add(rumps.separator)
 
@@ -162,13 +172,20 @@ class BudgetDashboardApp(rumps.App):
         return fill_char * filled + "\u2591" * empty
 
     def _get_totals(self) -> tuple[float, float]:
-        """Get total spend and total budget across enabled providers."""
+        """Get total spend and total budget across enabled pay-per-use providers."""
         total_spend = 0.0
-        total_budget = app_config.get_total_budget(self.cfg)
+        total_budget = 0.0
         with self._data_lock:
             for pid, usage in self.usage_data.items():
-                if app_config.is_provider_enabled(self.cfg, pid):
-                    total_spend += usage.current_spend
+                if not app_config.is_provider_enabled(self.cfg, pid):
+                    continue
+                if usage.is_subscription:
+                    continue  # Don't mix subscription fixed cost with pay-per-use
+                total_spend += usage.current_spend
+                total_budget += usage.monthly_budget
+        # If no pay-per-use providers have data, use config total
+        if total_budget == 0:
+            total_budget = app_config.get_total_budget(self.cfg)
         return total_spend, total_budget
 
     def _update_title(self) -> None:

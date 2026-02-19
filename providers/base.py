@@ -17,8 +17,11 @@ class UsageData:
     monthly_budget: float = 0.0
     tokens_in: int = 0
     tokens_out: int = 0
+    requests: int = 0
     last_updated: datetime = field(default_factory=datetime.now)
     error: str | None = None
+    is_subscription: bool = False
+    subscription_label: str = ""
 
     @property
     def remaining(self) -> float:
@@ -31,6 +34,8 @@ class UsageData:
         return min(100.0, (self.current_spend / self.monthly_budget) * 100.0)
 
     def format_spend(self) -> str:
+        if self.is_subscription:
+            return self.subscription_label or "Subscription"
         return f"${self.current_spend:.2f}/${self.monthly_budget:.0f}"
 
     def format_tokens(self) -> str:
