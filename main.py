@@ -271,13 +271,14 @@ class BudgetDashboardApp(rumps.App):
             with self._data_lock:
                 self.usage_data[pid] = usage
 
-            # Check budget alerts
-            notifier.check_and_notify(
-                provider_name=usage.provider_name,
-                provider_id=pid,
-                usage_percent=usage.usage_percent,
-                thresholds=thresholds,
-            )
+            # Check budget alerts (skip subscriptions — no meaningful dollar budget)
+            if not usage.is_subscription:
+                notifier.check_and_notify(
+                    provider_name=usage.provider_name,
+                    provider_id=pid,
+                    usage_percent=usage.usage_percent,
+                    thresholds=thresholds,
+                )
 
     def _refresh_in_background(self) -> None:
         """Run data refresh in a background thread.
