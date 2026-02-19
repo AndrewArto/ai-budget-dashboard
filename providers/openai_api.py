@@ -24,14 +24,30 @@ class OpenAIProvider(BaseProvider):
     provider_id = "openai"
     provider_name = "OpenAI"
 
-    def __init__(self, tracker=None, manual_spend: float | None = None):
+    def __init__(self, tracker=None, admin_key: str | None = None):
         self._tracker = tracker
-        self._manual_spend = manual_spend
+        self._admin_key = admin_key
         self._session = requests.Session()
 
     def fetch_usage(self, api_key: str | None, budget: float) -> UsageData:
-        """Fetch usage: JSONL first, Costs API second, manual fallback."""
-        # Try JSONL first
+        """Fetch usage: Costs API (admin key) first, JSONL fallback."""
+        # Primary: Costs API with admin key
+        costs_key = self._admin_key or api_key
+        if costs_key:
+            try:
+                result = self._call_costs_api(costs_key)
+                return UsageData(
+                    provider_id=self.provider_id,
+                    provider_name=self.provider_name,
+                    current_spend=result["spend"],
+                    monthly_budget=budget,
+                    tokens_in=result["tokens_in"],
+                    tokens_out=result["tokens_out"],
+                )
+            except Exception as e:
+                logger.warning("OpenAI Costs API failed: %s", e)
+
+        # Fallback: JSONL
         if self._tracker:
             tracked = self._tracker.get_monthly_usage("openai")
             if tracked["requests"] > 0:
@@ -44,31 +60,6 @@ class OpenAIProvider(BaseProvider):
                     tokens_out=tracked["tokens_out"],
                     requests=tracked["requests"],
                 )
-
-        # Fallback: try Costs API
-        if api_key:
-            try:
-                result = self._call_costs_api(api_key)
-                return UsageData(
-                    provider_id=self.provider_id,
-                    provider_name=self.provider_name,
-                    current_spend=result["spend"],
-                    monthly_budget=budget,
-                    tokens_in=result["tokens_in"],
-                    tokens_out=result["tokens_out"],
-                )
-            except Exception as e:
-                logger.debug("OpenAI Costs API failed: %s", e)
-
-        # Manual spend from config
-        if self._manual_spend is not None:
-            return UsageData(
-                provider_id=self.provider_id,
-                provider_name=self.provider_name,
-                current_spend=self._manual_spend,
-                monthly_budget=budget,
-                error="manual",
-            )
 
         return UsageData(
             provider_id=self.provider_id,

@@ -49,12 +49,13 @@ class BudgetDashboardApp(rumps.App):
         # Load API keys from OpenClaw config for fallback API calls
         self._api_keys = self._load_openclaw_keys()
 
-        # Initialize providers (JSONL tracking + API fallback + manual override)
+        # Initialize providers (API + JSONL tracking + manual fallback)
+        openai_admin = self.cfg["providers"].get("openai", {}).get("adminKey", "")
         self.providers = {
             "anthropic": AnthropicProvider(tracker=self.tracker),
             "openai": OpenAIProvider(
                 tracker=self.tracker,
-                manual_spend=self.cfg["providers"].get("openai", {}).get("manualSpend"),
+                admin_key=openai_admin or None,
             ),
             "google": GoogleProvider(tracker=self.tracker),
             "xai": XAIProvider(
