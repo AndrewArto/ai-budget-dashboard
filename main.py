@@ -14,6 +14,9 @@ import rumps
 
 from PyObjCTools import AppHelper
 
+import json
+import os
+
 import config as app_config
 import notifier
 from providers.base import UsageData
@@ -43,7 +46,10 @@ class BudgetDashboardApp(rumps.App):
         agents_path = app_config.get_agents_path(self.cfg)
         self.tracker = JsonlTracker(agents_path)
 
-        # Initialize providers (all use local JSONL tracking)
+        # Load API keys from OpenClaw config for fallback API calls
+        self._api_keys = self._load_openclaw_keys()
+
+        # Initialize providers (all use local JSONL tracking + API fallback)
         self.providers = {
             "anthropic": AnthropicProvider(tracker=self.tracker),
             "openai": OpenAIProvider(tracker=self.tracker),
@@ -257,10 +263,11 @@ class BudgetDashboardApp(rumps.App):
                 continue
 
             budget = app_config.get_provider_budget(self.cfg, pid)
+            api_key = self._api_keys.get(pid)
 
             logger.info("Fetching usage for %s...", pid)
             try:
-                usage = provider.fetch_usage(None, budget)
+                usage = provider.fetch_usage(api_key, budget)
             except Exception as e:
                 logger.error("Provider %s fetch raised: %s", pid, e)
                 continue
@@ -328,6 +335,25 @@ class BudgetDashboardApp(rumps.App):
     def _on_quit(self, _sender) -> None:
         """Handle quit button click."""
         rumps.quit_application()
+
+    @staticmethod
+    def _load_openclaw_keys() -> dict[str, str]:
+        """Load API keys from OpenClaw config (~/.openclaw/openclaw.json)."""
+        keys = {}
+        config_path = os.path.expanduser("~/.openclaw/openclaw.json")
+        try:
+            with open(config_path, "r") as f:
+                data = json.load(f)
+            env = data.get("env", {})
+            if env.get("OPENAI_API_KEY"):
+                keys["openai"] = env["OPENAI_API_KEY"]
+            if env.get("XAI_API_KEY"):
+                keys["xai"] = env["XAI_API_KEY"]
+            if env.get("GEMINI_API_KEY"):
+                keys["google"] = env["GEMINI_API_KEY"]
+        except (OSError, json.JSONDecodeError, KeyError) as e:
+            logger.debug("Could not load OpenClaw keys: %s", e)
+        return keys
 
 
 def main():
