@@ -18,14 +18,13 @@ class XAIProvider(BaseProvider):
     provider_id = "xai"
     provider_name = "xAI"
 
-    def __init__(self, tracker=None, team_id: str = "", mgmt_key: str = ""):
+    def __init__(self, tracker=None, manual_spend: float | None = None):
         self._tracker = tracker
-        self._team_id = team_id
-        self._mgmt_key = mgmt_key
+        self._manual_spend = manual_spend
         self._session = requests.Session()
 
     def fetch_usage(self, api_key: str | None, budget: float) -> UsageData:
-        """Fetch usage: JSONL first, billing API fallback."""
+        """Fetch usage: JSONL first, manual fallback."""
         # Try JSONL first
         if self._tracker:
             tracked = self._tracker.get_monthly_usage("xai")
@@ -40,18 +39,15 @@ class XAIProvider(BaseProvider):
                     requests=tracked["requests"],
                 )
 
-        # Fallback: try Management API (needs management key, not API key)
-        if self._team_id and self._mgmt_key:
-            try:
-                result = self._call_billing_api()
-                return UsageData(
-                    provider_id=self.provider_id,
-                    provider_name=self.provider_name,
-                    current_spend=result["spend"],
-                    monthly_budget=budget,
-                )
-            except Exception as e:
-                logger.warning("xAI billing API failed: %s", e)
+        # Manual spend from config
+        if self._manual_spend is not None:
+            return UsageData(
+                provider_id=self.provider_id,
+                provider_name=self.provider_name,
+                current_spend=self._manual_spend,
+                monthly_budget=budget,
+                error="manual",
+            )
 
         return UsageData(
             provider_id=self.provider_id,

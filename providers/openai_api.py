@@ -24,12 +24,13 @@ class OpenAIProvider(BaseProvider):
     provider_id = "openai"
     provider_name = "OpenAI"
 
-    def __init__(self, tracker=None):
+    def __init__(self, tracker=None, manual_spend: float | None = None):
         self._tracker = tracker
+        self._manual_spend = manual_spend
         self._session = requests.Session()
 
     def fetch_usage(self, api_key: str | None, budget: float) -> UsageData:
-        """Fetch usage: JSONL first, Costs API fallback."""
+        """Fetch usage: JSONL first, Costs API second, manual fallback."""
         # Try JSONL first
         if self._tracker:
             tracked = self._tracker.get_monthly_usage("openai")
@@ -57,19 +58,22 @@ class OpenAIProvider(BaseProvider):
                     tokens_out=result["tokens_out"],
                 )
             except Exception as e:
-                logger.warning("OpenAI Costs API failed: %s", e)
-                return UsageData(
-                    provider_id=self.provider_id,
-                    provider_name=self.provider_name,
-                    monthly_budget=budget,
-                    error=f"API: {e}",
-                )
+                logger.debug("OpenAI Costs API failed: %s", e)
+
+        # Manual spend from config
+        if self._manual_spend is not None:
+            return UsageData(
+                provider_id=self.provider_id,
+                provider_name=self.provider_name,
+                current_spend=self._manual_spend,
+                monthly_budget=budget,
+                error="manual",
+            )
 
         return UsageData(
             provider_id=self.provider_id,
             provider_name=self.provider_name,
             monthly_budget=budget,
-            error="No JSONL data, no API key",
         )
 
     def _call_costs_api(self, api_key: str) -> dict:
