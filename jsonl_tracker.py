@@ -129,10 +129,9 @@ class JsonlTracker:
             cost_obj = usage.get("cost", {})
             cost_total = cost_obj.get("total", 0) if isinstance(cost_obj, dict) else 0
 
-            if cost_total and cost_total > 0:
-                cost = cost_total
-            else:
-                cost = _calculate_cost(model, tokens_in, tokens_out, cache_read, cache_write)
+            # Use cost.total from OpenClaw when available; skip entries without it
+            # (matches OpenClaw's own loadCostUsageSummary behavior)
+            cost = cost_total if cost_total and cost_total > 0 else 0
 
             r = results[provider]
             r["spend"] += cost
@@ -167,10 +166,8 @@ class JsonlTracker:
             cost_obj = usage.get("cost", {})
             cost_total = cost_obj.get("total", 0) if isinstance(cost_obj, dict) else 0
 
-            if cost_total and cost_total > 0:
-                cost = cost_total
-            else:
-                cost = _calculate_cost(model, tokens_in, tokens_out, cache_read, cache_write)
+            # Use cost.total from OpenClaw when available; skip entries without it
+            cost = cost_total if cost_total and cost_total > 0 else 0
 
             total_spend += cost
             total_in += tokens_in + cache_read + cache_write

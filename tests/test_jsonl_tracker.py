@@ -106,13 +106,13 @@ class TestJsonlTracker:
 
     def test_single_entry(self, agents_dir):
         _write_jsonl(agents_dir, entries=[
-            _make_message(input_tokens=1000, output_tokens=500),
+            _make_message(input_tokens=1000, output_tokens=500, cost_total=0.05),
         ])
         tracker = JsonlTracker(str(agents_dir))
         result = tracker.get_monthly_usage("anthropic")
         assert result["tokens_in"] == 1000
         assert result["tokens_out"] == 500
-        assert result["spend"] > 0
+        assert result["spend"] == pytest.approx(0.05)
         assert result["requests"] == 1
 
     def test_multiple_entries(self, agents_dir):
@@ -226,8 +226,8 @@ class TestJsonlTracker:
         result = tracker.get_monthly_usage("anthropic")
         assert result["spend"] == 0.0
 
-    def test_fallback_to_calculate_when_cost_total_missing(self, agents_dir):
-        """When cost.total is absent/zero, fall back to _calculate_cost()."""
+    def test_no_cost_when_cost_total_missing(self, agents_dir):
+        """When cost.total is absent, spend is 0 (matches OpenClaw behavior)."""
         entry = {
             "type": "message",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -244,11 +244,11 @@ class TestJsonlTracker:
         _write_jsonl(agents_dir, entries=[entry])
         tracker = JsonlTracker(str(agents_dir))
         result = tracker.get_monthly_usage("anthropic")
-        # Should fall back: 1M input tokens of claude-opus-4-6 = $15
-        assert result["spend"] == pytest.approx(15.0, abs=0.01)
+        # No cost.total → skip cost (matches OpenClaw loadCostUsageSummary)
+        assert result["spend"] == 0.0
 
-    def test_fallback_when_cost_total_is_zero(self, agents_dir):
-        """When cost.total is explicitly 0, fall back to _calculate_cost()."""
+    def test_no_cost_when_cost_total_is_zero(self, agents_dir):
+        """When cost.total is explicitly 0, spend is 0."""
         entry = {
             "type": "message",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -265,7 +265,7 @@ class TestJsonlTracker:
         _write_jsonl(agents_dir, entries=[entry])
         tracker = JsonlTracker(str(agents_dir))
         result = tracker.get_monthly_usage("anthropic")
-        assert result["spend"] == pytest.approx(15.0, abs=0.01)
+        assert result["spend"] == 0.0
 
     def test_cost_total_preferred_over_manual_calc(self, agents_dir):
         """cost.total takes precedence over manual token-based calculation."""
