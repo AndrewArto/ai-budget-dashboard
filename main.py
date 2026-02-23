@@ -163,12 +163,7 @@ class BudgetDashboardApp(rumps.App):
             bar_item.set_callback(None)
             self.menu.add(bar_item)
 
-            # Show subscription_label as extra info (e.g. "Claude Max • Session 42%")
-            if usage.subscription_label:
-                label_item = rumps.MenuItem(f"  {usage.subscription_label}")
-                label_item.set_callback(None)
-                self.menu.add(label_item)
-            elif usage.tokens_in > 0 or usage.tokens_out > 0:
+            if usage.tokens_in > 0 or usage.tokens_out > 0:
                 tokens_item = rumps.MenuItem(f"  {usage.format_tokens()}")
                 tokens_item.set_callback(None)
                 self.menu.add(tokens_item)

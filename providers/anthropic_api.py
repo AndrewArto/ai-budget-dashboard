@@ -1,8 +1,7 @@
 """Anthropic provider -- reads usage from OpenClaw session JSONL files.
 
 For Claude Max (subscription/OAuth) users there is no billing API.
-Dollar spend is computed from JSONL usage.cost.total fields (set by OpenClaw).
-Shows actual dollar spend + subscription label (Max plan indicator).
+Shows as subscription (fixed €150/mo) with token counts and request count.
 Rate-limit data shown when available.
 """
 
@@ -35,23 +34,24 @@ class AnthropicProvider(BaseProvider):
     def fetch_usage(self, api_key: str | None, budget: float) -> UsageData:
         """Fetch usage from local JSONL tracker.
 
-        Returns actual dollar spend computed from JSONL cost.total fields,
-        plus a subscription_label noting Claude Max plan.
+        Returns subscription info (Claude Max €150/mo) with token counts.
+        Dollar spend is NOT shown — Claude Max is a flat subscription,
+        JSONL cost.total reflects API-equivalent pricing, not actual charges.
         """
         if self._tracker is None:
             return UsageData(
                 provider_id=self.provider_id,
                 provider_name=self.provider_name,
                 monthly_budget=budget,
+                is_subscription=True,
                 subscription_label="Claude Max",
             )
 
         tracked = self._tracker.get_monthly_usage("anthropic")
         requests = tracked.get("requests", 0)
-        spend = tracked.get("spend", 0.0)
 
-        # Build subscription label (shown as sub-item in menu)
-        label = f"Claude Max \u2022 {_format_count(tracked['tokens_in'])} tok \u2022 {requests:,} req"
+        # Build subscription label
+        label = f"Max \u2022 {_format_count(tracked['tokens_in'])} tok \u2022 {requests:,} req"
 
         # Try to read rate-limit snapshot for session/weekly limits
         ratelimit = self._read_ratelimit_snapshot()
@@ -62,19 +62,19 @@ class AnthropicProvider(BaseProvider):
             if remaining is not None and limit is not None:
                 try:
                     pct = round((1 - int(remaining) / int(limit)) * 100)
-                    label = f"Claude Max \u2022 Session {pct}%"
+                    label = f"Max \u2022 Session {pct}%"
                 except (ValueError, ZeroDivisionError):
                     pass
 
         return UsageData(
             provider_id=self.provider_id,
             provider_name=self.provider_name,
-            current_spend=spend,
-            monthly_budget=budget,
+            current_spend=CLAUDE_MAX_MONTHLY_EUR,
+            monthly_budget=CLAUDE_MAX_MONTHLY_EUR + EXTRA_USAGE_LIMIT_EUR,
             tokens_in=tracked["tokens_in"],
             tokens_out=tracked["tokens_out"],
             requests=requests,
-            is_subscription=False,
+            is_subscription=True,
             subscription_label=label,
         )
 
