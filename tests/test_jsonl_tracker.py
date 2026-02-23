@@ -225,3 +225,121 @@ class TestJsonlTracker:
         tracker = JsonlTracker("/nonexistent/path")
         result = tracker.get_monthly_usage("anthropic")
         assert result["spend"] == 0.0
+
+    def test_fallback_to_calculate_when_cost_total_missing(self, agents_dir):
+        """When cost.total is absent/zero, fall back to _calculate_cost()."""
+        entry = {
+            "type": "message",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message": {
+                "provider": "anthropic",
+                "model": "claude-opus-4-6",
+                "usage": {
+                    "input": 1_000_000,
+                    "output": 0,
+                    # No cost object at all
+                },
+            },
+        }
+        _write_jsonl(agents_dir, entries=[entry])
+        tracker = JsonlTracker(str(agents_dir))
+        result = tracker.get_monthly_usage("anthropic")
+        # Should fall back: 1M input tokens of claude-opus-4-6 = $15
+        assert result["spend"] == pytest.approx(15.0, abs=0.01)
+
+    def test_fallback_when_cost_total_is_zero(self, agents_dir):
+        """When cost.total is explicitly 0, fall back to _calculate_cost()."""
+        entry = {
+            "type": "message",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message": {
+                "provider": "anthropic",
+                "model": "claude-opus-4-6",
+                "usage": {
+                    "input": 1_000_000,
+                    "output": 0,
+                    "cost": {"total": 0},
+                },
+            },
+        }
+        _write_jsonl(agents_dir, entries=[entry])
+        tracker = JsonlTracker(str(agents_dir))
+        result = tracker.get_monthly_usage("anthropic")
+        assert result["spend"] == pytest.approx(15.0, abs=0.01)
+
+    def test_cost_total_preferred_over_manual_calc(self, agents_dir):
+        """cost.total takes precedence over manual token-based calculation."""
+        # 1M input tokens of gpt-4o would be $2.50 manually, but cost.total=9.99 wins
+        entry = {
+            "type": "message",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message": {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "usage": {
+                    "input": 1_000_000,
+                    "output": 0,
+                    "cost": {"total": 9.99},
+                },
+            },
+        }
+        _write_jsonl(agents_dir, entries=[entry])
+        tracker = JsonlTracker(str(agents_dir))
+        result = tracker.get_monthly_usage("openai")
+        assert result["spend"] == pytest.approx(9.99, abs=0.0001)
+
+
+FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
+
+
+class TestJsonlTrackerWithRealFixture:
+    """Tests using the real sample.jsonl fixture from tests/fixtures/."""
+
+    @pytest.fixture
+    def fixture_agents_dir(self, tmp_path):
+        """Set up agents directory structure pointing at the real fixture file."""
+        sessions_dir = tmp_path / "agent0" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        fixture_src = os.path.join(FIXTURES_DIR, "sample.jsonl")
+        import shutil
+        shutil.copy(fixture_src, sessions_dir / "sample.jsonl")
+        return tmp_path
+
+    def test_fixture_loads_anthropic_entries(self, fixture_agents_dir):
+        """sample.jsonl has 20 anthropic entries — all should be counted."""
+        tracker = JsonlTracker(str(fixture_agents_dir))
+        # Fixture entries are from 2026-02-01; force aggregate for that month
+        result = tracker._aggregate("anthropic", 2026, 2)
+        assert result["requests"] == 20
+
+    def test_fixture_cost_total_used_not_manual_calc(self, fixture_agents_dir):
+        """Spend should come from cost.total fields, not manual token pricing.
+
+        The fixture uses claude-opus-4-5 (priced as $3/$15 per 1M tokens).
+        Manual calc would give a different (lower) result than the pre-computed
+        cost.total values that reflect the actual cache-heavy pricing.
+        """
+        tracker = JsonlTracker(str(fixture_agents_dir))
+        result = tracker._aggregate("anthropic", 2026, 2)
+
+        # Verify cost.total was used: sum all cost.total from fixture
+        # (these values are pre-computed by OpenClaw and include cache pricing)
+        assert result["spend"] > 0.0
+
+        # Manual calc using token counts would undercount because the fixture
+        # entries have heavy cache usage that cost.total captures correctly.
+        # Verify spend is close to the sum of cost.total values (~0.2525 USD).
+        assert result["spend"] == pytest.approx(0.2525, abs=0.001)
+
+    def test_fixture_anthropic_spend_nonzero(self, fixture_agents_dir):
+        """Anthropic spend from fixture is non-zero (not excluded as subscription)."""
+        tracker = JsonlTracker(str(fixture_agents_dir))
+        result = tracker._aggregate("anthropic", 2026, 2)
+        assert result["spend"] > 0.0
+
+    def test_fixture_no_openai_entries(self, fixture_agents_dir):
+        """Fixture contains only anthropic entries — openai spend should be 0."""
+        tracker = JsonlTracker(str(fixture_agents_dir))
+        result = tracker._aggregate("openai", 2026, 2)
+        assert result["requests"] == 0
+        assert result["spend"] == 0.0
